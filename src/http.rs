@@ -7,14 +7,27 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::database::Database;
+use crate::{auth, crypto::Crypto, database::Database, smtp_accounts};
 
-pub fn router(web_dist: &Path, database: Database) -> Router {
+#[derive(Clone)]
+pub struct AppState {
+    pub database: Database,
+    pub crypto: Crypto,
+    pub cookie_secure: bool,
+}
+
+pub fn router(web_dist: &Path, state: AppState) -> Router {
     let static_files =
         ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
 
     let api = Router::new()
         .route("/health", get(health))
+        .nest(
+            "/admin",
+            Router::new()
+                .merge(auth::router())
+                .merge(smtp_accounts::router()),
+        )
         .fallback(api_not_found);
 
     Router::new()
@@ -22,11 +35,11 @@ pub fn router(web_dist: &Path, database: Database) -> Router {
         .nest("/api/v1", api)
         .fallback_service(static_files)
         .layer(TraceLayer::new_for_http())
-        .with_state(database)
+        .with_state(state)
 }
 
-async fn health(State(database): State<Database>) -> (StatusCode, Json<HealthResponse>) {
-    match database.ping().await {
+async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+    match state.database.ping().await {
         Ok(()) => (StatusCode::OK, Json(HealthResponse { status: "ok" })),
         Err(_) => {
             tracing::warn!("database health check failed");
@@ -59,4 +72,295 @@ async fn api_not_found() -> (StatusCode, Json<ApiError>) {
 struct ApiError {
     code: &'static str,
     message: &'static str,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Method, Request, Response, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    use super::{router, AppState};
+    use crate::{
+        auth,
+        config::{Config, DatabaseKind},
+        crypto::Crypto,
+        database::Database,
+    };
+
+    fn set_cookie(response: &Response<Body>, name: &str) -> String {
+        response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .filter_map(|value| value.split(';').next())
+            .find(|value| value.starts_with(&format!("{name}=")))
+            .unwrap()
+            .to_owned()
+    }
+
+    async fn request(
+        app: &axum::Router,
+        method: Method,
+        path: &str,
+        cookie: Option<&str>,
+        csrf: Option<&str>,
+        body: Option<Value>,
+    ) -> Response<Body> {
+        let mut builder = Request::builder().method(method).uri(path);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        if let Some(csrf) = csrf {
+            builder = builder.header("x-csrf-token", csrf);
+        }
+        let body = if let Some(body) = body {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            Body::from(body.to_string())
+        } else {
+            Body::empty()
+        };
+        app.clone()
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_session_and_smtp_account_lifecycle() {
+        let config = Config {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            database_kind: DatabaseKind::Sqlite,
+            database_url: "sqlite::memory:".to_owned(),
+            web_dist: PathBuf::from("frontend/dist"),
+            cookie_secure: false,
+        };
+        let database = Database::connect(&config).await.unwrap();
+        auth::initialize_admin(&database, "admin", "TestPassword123!")
+            .await
+            .unwrap();
+        assert!(
+            auth::initialize_admin(&database, "other", "TestPassword123!")
+                .await
+                .is_err()
+        );
+        let app = router(
+            &config.web_dist,
+            AppState {
+                database: database.clone(),
+                crypto: Crypto::new([9; 32]),
+                cookie_secure: false,
+            },
+        );
+
+        let list_path = "/api/v1/admin/smtp-accounts";
+        assert_eq!(
+            request(&app, Method::GET, list_path, None, None, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let session = request(&app, Method::GET, "/api/v1/admin/session", None, None, None).await;
+        let initial_csrf = set_cookie(&session, "postwarden_csrf");
+        let login = json!({"login_name":"admin","password":"TestPassword123!"});
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                "/api/v1/admin/session",
+                Some(&initial_csrf),
+                initial_csrf.split_once('=').map(|(_, value)| value),
+                Some(json!({"login_name":"missing","password":"TestPassword123!"})),
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                "/api/v1/admin/session",
+                Some(&initial_csrf),
+                None,
+                Some(login.clone()),
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        let response = request(
+            &app,
+            Method::POST,
+            "/api/v1/admin/session",
+            Some(&initial_csrf),
+            initial_csrf.split_once('=').map(|(_, value)| value),
+            Some(login),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let session_cookie = set_cookie(&response, "postwarden_session");
+        let csrf_cookie = set_cookie(&response, "postwarden_csrf");
+        let cookies = format!("{session_cookie}; {csrf_cookie}");
+        let csrf_value = csrf_cookie.split_once('=').unwrap().1;
+
+        let create = json!({
+            "name":"Smoke SMTP", "host":"smtp.example.com", "port":587,
+            "tls_mode":"starttls", "auth_type":"plain",
+            "username":"mail@example.com", "credential":"test-secret"
+        });
+        let mut insecure = create.clone();
+        insecure["tls_mode"] = json!("none");
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                list_path,
+                Some(&cookies),
+                Some(csrf_value),
+                Some(insecure),
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                list_path,
+                Some(&cookies),
+                None,
+                Some(create.clone())
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        let response = request(
+            &app,
+            Method::POST,
+            list_path,
+            Some(&cookies),
+            Some(csrf_value),
+            Some(create),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                .unwrap();
+        assert!(payload.get("credential").is_none());
+        let id = payload["id"].as_str().unwrap();
+        let Database::Sqlite(pool) = &database else {
+            unreachable!()
+        };
+        let encrypted: Vec<u8> =
+            sqlx::query_scalar("SELECT credential_ciphertext FROM smtp_accounts WHERE id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert!(!encrypted
+            .windows(b"test-secret".len())
+            .any(|w| w == b"test-secret"));
+
+        let account_path = format!("{list_path}/{id}");
+        let response = request(
+            &app,
+            Method::PUT,
+            &account_path,
+            Some(&cookies),
+            Some(csrf_value),
+            Some(json!({"name":"Renamed SMTP"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let after_update: Vec<u8> =
+            sqlx::query_scalar("SELECT credential_ciphertext FROM smtp_accounts WHERE id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(after_update, encrypted);
+        let disable_path = format!("{account_path}/disable");
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                &disable_path,
+                Some(&cookies),
+                Some(csrf_value),
+                None,
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        let enable_path = format!("{account_path}/enable");
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                &enable_path,
+                Some(&cookies),
+                Some(csrf_value),
+                None,
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::DELETE,
+                &account_path,
+                Some(&cookies),
+                Some(csrf_value),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        let encrypted: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT credential_ciphertext FROM smtp_accounts WHERE id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert!(encrypted.is_none());
+        assert_eq!(
+            request(&app, Method::GET, &account_path, Some(&cookies), None, None)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::DELETE,
+                "/api/v1/admin/session",
+                Some(&cookies),
+                Some(csrf_value),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            request(&app, Method::GET, list_path, Some(&cookies), None, None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
 }

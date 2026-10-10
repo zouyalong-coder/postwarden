@@ -1,6 +1,9 @@
+mod auth;
 mod config;
+mod crypto;
 mod database;
 mod http;
+mod smtp_accounts;
 
 use tracing_subscriber::EnvFilter;
 
@@ -12,9 +15,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    let args: Vec<String> = std::env::args().collect();
     let config = config::Config::from_env()?;
+    if args.len() >= 2 && args[1] == "init-admin" {
+        if args.len() != 3 {
+            return Err("usage: postwarden init-admin <login-name>".into());
+        }
+        let password = rpassword::prompt_password("Administrator password: ")?;
+        let confirmation = rpassword::prompt_password("Confirm password: ")?;
+        if password != confirmation {
+            return Err("passwords do not match".into());
+        }
+        let database = database::Database::connect(&config).await?;
+        auth::initialize_admin(&database, &args[2], &password).await?;
+        println!("Administrator initialized");
+        return Ok(());
+    }
+    if args.len() != 1 {
+        return Err("usage: postwarden [init-admin <login-name>]".into());
+    }
+
+    let crypto = crypto::Crypto::from_env()?;
     let database = database::Database::connect(&config).await?;
-    let app = http::router(&config.web_dist, database);
+    let app = http::router(
+        &config.web_dist,
+        http::AppState {
+            database,
+            crypto,
+            cookie_secure: config.cookie_secure,
+        },
+    );
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
 
     tracing::info!(

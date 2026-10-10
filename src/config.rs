@@ -12,6 +12,7 @@ pub struct Config {
     pub database_kind: DatabaseKind,
     pub database_url: String,
     pub web_dist: PathBuf,
+    pub cookie_secure: bool,
 }
 
 impl Config {
@@ -31,12 +32,20 @@ impl Config {
         let web_dist = env::var_os("POSTWARDEN_WEB_DIST")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("frontend/dist"));
+        let cookie_secure = match env::var("POSTWARDEN_COOKIE_SECURE") {
+            Ok(value) if value == "false" => false,
+            Ok(value) if value == "true" => true,
+            Ok(_) => return Err("POSTWARDEN_COOKIE_SECURE must be true or false".into()),
+            Err(env::VarError::NotPresent) => true,
+            Err(error) => return Err(error.into()),
+        };
 
         Ok(Self {
             listen_addr,
             database_kind,
             database_url,
             web_dist,
+            cookie_secure,
         })
     }
 }

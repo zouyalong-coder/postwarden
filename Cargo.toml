@@ -6,10 +6,22 @@ description = "Self-hosted SMTP sending proxy and authorization service"
 license = "Apache-2.0"
 
 [dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
 axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+rand = "0.8"
+rpassword = "7"
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "mysql", "migrate", "macros"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "mysql", "migrate", "macros", "chrono"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
