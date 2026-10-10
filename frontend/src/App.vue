@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 
 const session = ref({ authenticated: false, login_name: null })
 const login = reactive({ login_name: '', password: '' })
@@ -24,12 +24,28 @@ const issuedTokenIdentityIds = ref([])
 const pluginEditingId = ref(null)
 const pluginConfigText = ref('')
 const tabs = [{ id: 'accounts', label: 'SMTP 账号' }, { id: 'tokens', label: 'API Token' }, { id: 'plugins', label: '插件' }, { id: 'history', label: '发送历史' }]
-const activeTab = ref('accounts')
+function tabFromPath() {
+  const path = window.location.pathname.replace(/\/$/, '')
+  return tabs.find(tab => `/${tab.id}` === path)?.id || 'accounts'
+}
+const activeTab = ref(tabFromPath())
 const configuredAccountId = ref(null)
+
+function selectTab(id) {
+  activeTab.value = id
+  const path = `/${id}`
+  if (window.location.pathname !== path) {
+    const url = new URL(window.location.href)
+    url.pathname = path
+    window.history.pushState(null, '', url)
+  }
+}
+
+function syncTabFromPath() { activeTab.value = tabFromPath() }
 
 function moveTab(direction) {
   const index = tabs.findIndex(tab => tab.id === activeTab.value)
-  activeTab.value = tabs[(index + direction + tabs.length) % tabs.length].id
+  selectTab(tabs[(index + direction + tabs.length) % tabs.length].id)
   document.getElementById(`tab-${activeTab.value}`)?.focus()
 }
 
@@ -110,7 +126,7 @@ async function signOut() {
     issuedTokenSecret.value = ''
     issuedTokenIdentityIds.value = []
     configuredAccountId.value = null
-    activeTab.value = 'accounts'
+    selectTab('accounts')
     cancelEdit()
     cancelIdentityEdit()
   } catch (cause) { error.value = cause.message }
@@ -119,7 +135,7 @@ async function signOut() {
 
 function edit(account) {
   clearNotice()
-  activeTab.value = 'accounts'
+  selectTab('accounts')
   editingId.value = account.id
   Object.assign(form, { name: account.name, host: account.host, port: account.port,
     tls_mode: account.tls_mode, auth_type: account.auth_type, username: account.username || '',
@@ -423,7 +439,11 @@ async function resolveHeld(message, action) {
 }
 function formatTime(value) { return value ? new Date(value).toLocaleString() : '—' }
 
-onMounted(loadSession)
+onMounted(() => {
+  window.addEventListener('popstate', syncTabFromPath)
+  loadSession()
+})
+onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
 </script>
 
 <template>
@@ -453,7 +473,7 @@ onMounted(loadSession)
 
       <template v-else>
         <nav class="admin-tabs" role="tablist" aria-label="管理分类">
-          <button v-for="tab in tabs" :id="`tab-${tab.id}`" :key="tab.id" type="button" role="tab" class="admin-tab" :class="{ active: activeTab === tab.id }" :aria-selected="activeTab === tab.id" :aria-controls="`panel-${tab.id}`" :tabindex="activeTab === tab.id ? 0 : -1" @click="activeTab = tab.id" @keydown.left.prevent="moveTab(-1)" @keydown.right.prevent="moveTab(1)">{{ tab.label }}</button>
+          <button v-for="tab in tabs" :id="`tab-${tab.id}`" :key="tab.id" type="button" role="tab" class="admin-tab" :class="{ active: activeTab === tab.id }" :aria-selected="activeTab === tab.id" :aria-controls="`panel-${tab.id}`" :tabindex="activeTab === tab.id ? 0 : -1" @click="selectTab(tab.id)" @keydown.left.prevent="moveTab(-1)" @keydown.right.prevent="moveTab(1)">{{ tab.label }}</button>
         </nav>
         <div v-show="activeTab === 'accounts'" id="panel-accounts" class="tab-content" role="tabpanel" aria-labelledby="tab-accounts">
         <section class="panel" aria-labelledby="accounts-title">
