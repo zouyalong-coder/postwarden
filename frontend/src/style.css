@@ -1,7 +1,7 @@
 :root { font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #202720; background: #f4f5f2; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 .shell { min-height: 100vh; }
@@ -26,7 +26,8 @@ h1 { margin: 0; font-size: clamp(30px, 5vw, 44px); letter-spacing: -.055em; line
 .empty-state { margin: 0; color: #788078; font-size: 14px; }
 label { display: flex; flex-direction: column; gap: 8px; color: #3c493d; font-size: 13px; font-weight: 600; }
 input:not([type="checkbox"]), select { width: 100%; min-height: 42px; padding: 9px 12px; border: 1px solid #d2d9d0; border-radius: 8px; outline: none; background: #fff; color: #233126; font-size: 14px; font-weight: 400; }
-input:focus, select:focus { border-color: #477758; box-shadow: 0 0 0 3px #47775822; }
+textarea { width: 100%; min-height: 112px; padding: 11px 12px; border: 1px solid #d2d9d0; border-radius: 8px; outline: none; background: #fff; color: #233126; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+input:focus, select:focus, textarea:focus { border-color: #477758; box-shadow: 0 0 0 3px #47775822; }
 .login-panel { max-width: 460px; }
 .login-panel label + label { margin-top: 18px; }
 .login-panel .primary-button { margin-top: 24px; }
@@ -42,6 +43,44 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .account-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 0; border-top: 1px solid #e6eae3; }
 .account-name { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 600; }
 .account-details { margin-top: 6px; color: #69756a; font-size: 13px; overflow-wrap: anywhere; }
+.permission-list { margin-top: 7px; color: #69756a; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.muted-row { opacity: .72; }
+.token-summary { min-width: 0; }
+.identity-select { min-height: 112px; }
+.plugin-editor { margin-top: 15px; max-width: 620px; }
+.plugin-editor small, .form-grid small { color: #758075; font-size: 11px; font-weight: 400; line-height: 1.5; }
+.plugin-editor .row-actions { margin-top: 12px; align-items: center; }
+.secret-panel { border-color: #c9ddca; background: #f1f7ef; }
+.secret-value { display: flex; align-items: center; gap: 16px; }
+.secret-value code { flex: 1; padding: 12px; border: 1px solid #d5e2d3; border-radius: 8px; background: #fff; color: #253d2c; overflow-wrap: anywhere; user-select: all; }
+.secret-actions { display: flex; align-items: center; gap: 16px; white-space: nowrap; }
+.account-controls { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.test-message { width: min(100%, 460px); color: #345c45; font-size: 13px; }
+.test-message summary { cursor: pointer; text-align: right; font-weight: 600; }
+.test-message-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.test-message-form .primary-button, .test-message-form .helper-text { grid-column: 1 / -1; }
+.test-message-form .helper-text { margin: 0; color: #758075; font-size: 11px; line-height: 1.5; }
+.test-result { max-width: 460px; padding: 8px 11px; border-radius: 7px; font-size: 12px; }
+.test-success { color: #315d40; background: #e8f3e9; }
+.test-failure { color: #8b2e27; background: #fcebe8; }
+.history-filters { align-items: end; margin-bottom: 18px; }
+.filter-action { display: flex; align-items: end; }
+.history-empty { padding: 12px 0; }
+.history-row code { overflow-wrap: anywhere; }
+.status-smtp_accepted { color: #376445; background: #e6f1e8; }
+.status-failed, .status-rejected, .status-outcome_unknown { color: #8b2e27; background: #fcebe8; }
+.status-processing, .status-queued, .status-retry_wait, .status-held { color: #6d5928; background: #f5f0df; }
+.status-expired { color: #777268; background: #eeece7; }
+.message-detail { margin-top: 22px; padding: 20px; border: 1px solid #e0e4dc; border-radius: 10px; background: #f5f7f3; }
+.message-detail .panel-heading { margin-bottom: 15px; }
+.message-detail h3 { margin: 0 0 6px; font-size: 16px; }
+.message-detail h4 { margin: 20px 0 8px; font-size: 13px; }
+.detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.detail-grid div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.detail-grid span, .audit-row span { color: #758075; font-size: 11px; }
+.detail-grid strong { font-size: 12px; overflow-wrap: anywhere; }
+.audit-row { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid #e1e6df; font-size: 12px; }
+.audit-row span { text-align: right; overflow-wrap: anywhere; }
 .badge { padding: 3px 7px; border-radius: 6px; font-size: 11px; font-weight: 500; white-space: nowrap; }
 .badge.enabled { color: #376445; background: #e6f1e8; }
 .badge.disabled { color: #777268; background: #eeece7; }
@@ -53,5 +92,5 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .form-actions { margin-top: 24px; }
 footer { margin-top: 48px; color: #90978f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
 footer span { padding: 0 5px; }
-@media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } .account-row { align-items: flex-start; flex-direction: column; gap: 10px; } .row-actions { gap: 20px; } }
+@media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } .account-row { align-items: flex-start; flex-direction: column; gap: 10px; } .account-controls { width: 100%; align-items: flex-start; } .row-actions { gap: 20px; flex-wrap: wrap; } .test-message summary { text-align: left; } .test-message-form { grid-template-columns: 1fr; } .test-message-form .primary-button, .test-message-form .helper-text { grid-column: auto; } .secret-value { align-items: stretch; flex-direction: column; } .secret-actions { justify-content: space-between; } .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .audit-row { align-items: flex-start; flex-direction: column; gap: 5px; } .audit-row span { text-align: left; } }
 @media (max-width: 520px) { .topbar { padding-inline: 20px; } .environment { display: none; } .panel { padding: 20px; } .split-heading { flex-direction: column; gap: 10px; } }

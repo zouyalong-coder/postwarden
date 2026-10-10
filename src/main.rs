@@ -1,9 +1,17 @@
+mod admin_messages;
 mod auth;
 mod config;
 mod crypto;
 mod database;
 mod http;
+mod messages;
+mod plugins;
+mod sender_identities;
 mod smtp_accounts;
+mod smtp_tests;
+mod smtp_transport;
+mod tokens;
+mod worker;
 
 use tracing_subscriber::EnvFilter;
 
@@ -37,14 +45,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let crypto = crypto::Crypto::from_env()?;
     let database = database::Database::connect(&config).await?;
-    let app = http::router(
-        &config.web_dist,
-        http::AppState {
-            database,
-            crypto,
-            cookie_secure: config.cookie_secure,
-        },
-    );
+    let plugins = plugins::PluginManager::new(database.clone(), crypto.clone()).await?;
+    let state = http::AppState {
+        database,
+        crypto,
+        cookie_secure: config.cookie_secure,
+        plugins,
+        retention: config.retention,
+    };
+    let worker = worker::spawn(state.clone());
+    let app = http::router(&config.web_dist, state);
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
 
     tracing::info!(
@@ -55,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    worker.abort();
 
     Ok(())
 }

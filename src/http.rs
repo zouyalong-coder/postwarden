@@ -7,13 +7,18 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::{auth, crypto::Crypto, database::Database, smtp_accounts};
+use crate::{
+    admin_messages, auth, config::RetentionPolicy, crypto::Crypto, database::Database, messages,
+    plugins, sender_identities, smtp_accounts, smtp_tests, tokens,
+};
 
 #[derive(Clone)]
 pub struct AppState {
     pub database: Database,
     pub crypto: Crypto,
     pub cookie_secure: bool,
+    pub plugins: plugins::PluginManager,
+    pub retention: RetentionPolicy,
 }
 
 pub fn router(web_dist: &Path, state: AppState) -> Router {
@@ -22,11 +27,17 @@ pub fn router(web_dist: &Path, state: AppState) -> Router {
 
     let api = Router::new()
         .route("/health", get(health))
+        .merge(messages::router())
         .nest(
             "/admin",
             Router::new()
                 .merge(auth::router())
-                .merge(smtp_accounts::router()),
+                .merge(smtp_accounts::router())
+                .merge(smtp_tests::router())
+                .merge(admin_messages::router())
+                .merge(sender_identities::router())
+                .merge(tokens::router())
+                .merge(plugins::router()),
         )
         .fallback(api_not_found);
 
@@ -88,9 +99,10 @@ mod tests {
     use super::{router, AppState};
     use crate::{
         auth,
-        config::{Config, DatabaseKind},
+        config::{Config, DatabaseKind, RetentionPolicy},
         crypto::Crypto,
         database::Database,
+        plugins::PluginManager,
     };
 
     fn set_cookie(response: &Response<Body>, name: &str) -> String {
@@ -140,6 +152,11 @@ mod tests {
             database_url: "sqlite::memory:".to_owned(),
             web_dist: PathBuf::from("frontend/dist"),
             cookie_secure: false,
+            retention: RetentionPolicy {
+                pending_days: 7,
+                content_days: 7,
+                audit_days: 90,
+            },
         };
         let database = Database::connect(&config).await.unwrap();
         auth::initialize_admin(&database, "admin", "TestPassword123!")
@@ -156,6 +173,10 @@ mod tests {
                 database: database.clone(),
                 crypto: Crypto::new([9; 32]),
                 cookie_secure: false,
+                retention: config.retention,
+                plugins: PluginManager::new(database.clone(), Crypto::new([9; 32]))
+                    .await
+                    .unwrap(),
             },
         );
 

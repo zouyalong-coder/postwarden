@@ -1,0 +1,4 @@
+{$POSTWARDEN_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy postwarden:8080
+}

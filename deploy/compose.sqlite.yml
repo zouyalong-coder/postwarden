@@ -1,0 +1,32 @@
+services:
+  postwarden:
+    build: ..
+    restart: unless-stopped
+    environment:
+      POSTWARDEN_MASTER_KEY: ${POSTWARDEN_MASTER_KEY:?set a persistent base64 key}
+      POSTWARDEN_LISTEN: 0.0.0.0:8080
+      POSTWARDEN_COOKIE_SECURE: "true"
+      DATABASE_URL: sqlite://data/postwarden.db
+      POSTWARDEN_PENDING_DAYS: ${POSTWARDEN_PENDING_DAYS:-7}
+      POSTWARDEN_CONTENT_DAYS: ${POSTWARDEN_CONTENT_DAYS:-7}
+      POSTWARDEN_AUDIT_DAYS: ${POSTWARDEN_AUDIT_DAYS:-90}
+    volumes:
+      - postwarden_data:/var/lib/postwarden/data
+    networks: [internal]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      POSTWARDEN_DOMAIN: ${POSTWARDEN_DOMAIN:?set the HTTPS domain}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [internal]
+networks:
+  internal:
+volumes:
+  postwarden_data:
+  caddy_data:
+  caddy_config:

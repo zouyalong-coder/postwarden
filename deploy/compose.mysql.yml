@@ -1,0 +1,49 @@
+services:
+  postwarden:
+    build: ..
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      POSTWARDEN_MASTER_KEY: ${POSTWARDEN_MASTER_KEY:?set a persistent base64 key}
+      POSTWARDEN_LISTEN: 0.0.0.0:8080
+      POSTWARDEN_COOKIE_SECURE: "true"
+      DATABASE_URL: mysql://postwarden:${MYSQL_PASSWORD:?set a database password}@mysql:3306/postwarden
+      POSTWARDEN_PENDING_DAYS: ${POSTWARDEN_PENDING_DAYS:-7}
+      POSTWARDEN_CONTENT_DAYS: ${POSTWARDEN_CONTENT_DAYS:-7}
+      POSTWARDEN_AUDIT_DAYS: ${POSTWARDEN_AUDIT_DAYS:-90}
+    networks: [internal]
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: postwarden
+      MYSQL_USER: postwarden
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set a database password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set a root password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      POSTWARDEN_DOMAIN: ${POSTWARDEN_DOMAIN:?set the HTTPS domain}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [internal]
+networks:
+  internal:
+volumes:
+  mysql_data:
+  caddy_data:
+  caddy_config:

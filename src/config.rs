@@ -13,6 +13,38 @@ pub struct Config {
     pub database_url: String,
     pub web_dist: PathBuf,
     pub cookie_secure: bool,
+    pub retention: RetentionPolicy,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionPolicy {
+    pub pending_days: i64,
+    pub content_days: i64,
+    pub audit_days: i64,
+}
+
+impl RetentionPolicy {
+    fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        fn days(name: &str) -> Result<i64, Box<dyn std::error::Error>> {
+            let value = env::var(name)?.parse::<i64>()?;
+            if !(0..=3650).contains(&value) {
+                return Err(format!("{name} must be between 0 and 3650").into());
+            }
+            Ok(value)
+        }
+        fn optional_days(name: &str, default: i64) -> Result<i64, Box<dyn std::error::Error>> {
+            match env::var(name) {
+                Ok(_) => days(name),
+                Err(env::VarError::NotPresent) => Ok(default),
+                Err(e) => Err(e.into()),
+            }
+        }
+        Ok(Self {
+            pending_days: optional_days("POSTWARDEN_PENDING_DAYS", 7)?,
+            content_days: optional_days("POSTWARDEN_CONTENT_DAYS", 7)?,
+            audit_days: optional_days("POSTWARDEN_AUDIT_DAYS", 90)?,
+        })
+    }
 }
 
 impl Config {
@@ -46,6 +78,7 @@ impl Config {
             database_url,
             web_dist,
             cookie_secure,
+            retention: RetentionPolicy::from_env()?,
         })
     }
 }
