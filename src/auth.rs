@@ -153,6 +153,23 @@ pub async fn initialize_admin(
     Ok(())
 }
 
+/// Whether the singleton administrator has already been initialized.
+pub async fn has_admin(database: &Database) -> Result<bool, sqlx::Error> {
+    let count: i64 = match database {
+        Database::Sqlite(pool) => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM admin_users")
+                .fetch_one(pool)
+                .await?
+        }
+        Database::Mysql(pool) => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM admin_users")
+                .fetch_one(pool)
+                .await?
+        }
+    };
+    Ok(count > 0)
+}
+
 #[derive(Deserialize)]
 struct LoginRequest {
     login_name: String,

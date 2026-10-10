@@ -25,6 +25,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     let config = config::Config::from_env()?;
+    if args.len() >= 2 && args[1] == "setup" {
+        if args.len() != 3 {
+            return Err("usage: postwarden setup <login-name>".into());
+        }
+        // Validate the master key during setup so a service with an unusable
+        // encryption key is never presented as ready for local testing.
+        let _ = crypto::Crypto::from_env()?;
+        let database = database::Database::connect(&config).await?;
+        println!("Database ready; migrations applied");
+        if auth::has_admin(&database).await? {
+            println!("Administrator already initialized; keeping the existing account");
+            return Ok(());
+        }
+        let password = setup_password()?;
+        auth::initialize_admin(&database, &args[2], &password).await?;
+        println!("Administrator initialized");
+        return Ok(());
+    }
     if args.len() >= 2 && args[1] == "init-admin" {
         if args.len() != 3 {
             return Err("usage: postwarden init-admin <login-name>".into());
@@ -40,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if args.len() != 1 {
-        return Err("usage: postwarden [init-admin <login-name>]".into());
+        return Err("usage: postwarden [setup <login-name> | init-admin <login-name>]".into());
     }
 
     let crypto = crypto::Crypto::from_env()?;
@@ -68,6 +86,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.abort();
 
     Ok(())
+}
+
+fn setup_password() -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(path) = std::env::var_os("POSTWARDEN_SETUP_PASSWORD_FILE") {
+        let path = std::path::PathBuf::from(path);
+        let metadata = std::fs::metadata(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(
+                    "POSTWARDEN_SETUP_PASSWORD_FILE must be readable only by its owner".into(),
+                );
+            }
+        }
+        let password = std::fs::read_to_string(path)?;
+        return Ok(password.trim_end_matches(['\r', '\n']).to_owned());
+    }
+    let password = rpassword::prompt_password("Administrator password (at least 12 characters): ")
+        .map_err(|error| format!("cannot read terminal password ({error}); run in an interactive terminal or use POSTWARDEN_SETUP_PASSWORD_FILE"))?;
+    let confirmation = rpassword::prompt_password("Confirm password: ")
+        .map_err(|error| format!("cannot read terminal confirmation ({error}); run in an interactive terminal or use POSTWARDEN_SETUP_PASSWORD_FILE"))?;
+    if password != confirmation {
+        return Err("passwords do not match".into());
+    }
+    Ok(password)
 }
 
 async fn shutdown_signal() {

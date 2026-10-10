@@ -4,35 +4,30 @@ PostWarden 是自托管的 SMTP 发送代理和授权中心。调用方使用 Po
 
 仓库包含 [MVP 范围](docs/mvp-scope.md)、[架构与决策](docs/README.md) 和 Rust 服务。服务提供管理员会话、SMTP 账号与发件身份、API Token、发送 API、消息历史和同进程 Worker。SQLite 与 MySQL 各有迁移；MySQL 的运行时端到端验证仍待完成。
 
-## 本地开发
+## 本地快速启动
 
-需要 Rust 工具链、Node.js 和 npm。首次启动前构建管理页面并初始化管理员：
-
-```sh
-cd frontend
-npm ci
-npm run build
-cd ..
-cargo run -- init-admin admin
-```
-
-初始化命令会交互式要求输入并确认至少 12 个字符的密码。仅能创建一个管理员。服务启动还需要持久保存的 32 字节主密钥；可用 `openssl rand -base64 32` 生成一次，并将结果作为 `POSTWARDEN_MASTER_KEY` 环境变量安全提供。丢失该密钥将无法解密已保存的 SMTP 凭证。本地 HTTP 开发时将 `POSTWARDEN_COOKIE_SECURE=false`，正式 HTTPS 部署保持默认的 `true`。
+需要 Rust 工具链、Node.js/npm 和 OpenSSL。在仓库根目录执行：
 
 ```sh
-export POSTWARDEN_MASTER_KEY='已安全保存的 base64 密钥'
-export POSTWARDEN_COOKIE_SECURE=false
-cargo run
+./scripts/postwarden.sh init
+./scripts/postwarden.sh start
 ```
 
-服务默认监听 `127.0.0.1:8080`，健康检查为 `/health`（会检查数据库连接）。`POSTWARDEN_LISTEN` 可指定监听地址，`POSTWARDEN_WEB_DIST` 可指定前端构建目录。`DATABASE_URL` 默认为 `sqlite://data/postwarden.db`；SQLite 数据目录会自动创建。MySQL 模式须先建立数据库并设置连接 URL。`POSTWARDEN_PENDING_DAYS`、`POSTWARDEN_CONTENT_DAYS` 和 `POSTWARDEN_AUDIT_DAYS` 控制保留期限，默认分别为 7、7、90 天。配置示例见 [`.env.example`](.env.example)，程序不会自动读取该文件。
+`init [管理员登录名]` 默认使用 `admin`，会检查依赖、执行 `npm ci`、构建管理页面和 Rust 服务、创建仅当前用户可读的 `.env`（包含一次生成的主密钥）、连接 SQLite 并执行迁移，然后交互式要求设置至少 12 字符的管理员密码。重复执行 `init` 会重新构建并检查数据库，但不会覆盖 `.env` 或已存在的管理员。完成后用 `start` 一键运行服务，按 Ctrl+C 停止。
+
+在没有交互式终端的自动化环境中，可设置 `POSTWARDEN_SETUP_PASSWORD_FILE` 指向仅文件所有者可读的密码文件；初始化会读取它而不显示密码。初始化完成后应移除该文件。
+
+本地默认访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)，健康检查为 `/health`。`.env` 默认使用 `sqlite://data/postwarden.db`，数据目录自动创建；默认 `POSTWARDEN_COOKIE_SECURE=false` 仅适用于本地 HTTP。需要更改监听地址、数据库或保留期时，编辑 `.env` 后重新执行 `start`。`POSTWARDEN_PENDING_DAYS`、`POSTWARDEN_CONTENT_DAYS`、`POSTWARDEN_AUDIT_DAYS` 默认分别为 7、7、90 天。`.env` 与主密钥必须一起安全保存；丢失主密钥将无法解密已保存的 SMTP 凭证和邮件内容。配置字段可参见 [`.env.example`](.env.example)。
+
+启动脚本在本地和镜像中相同：容器默认执行 `postwarden-launcher start`；初始化时执行 `postwarden-launcher init admin`。两种方式都由 Rust 服务运行迁移并启动同进程 Worker。
 
 ## Docker 与 HTTPS
 
-提供 [SQLite Compose 示例](deploy/compose.sqlite.yml) 和 [MySQL Compose 示例](deploy/compose.mysql.yml)。两者使用 Caddy 提供 HTTPS；请将域名解析到部署主机，并设置持久保存的 `POSTWARDEN_MASTER_KEY`、`POSTWARDEN_DOMAIN`，MySQL 模式还要设置数据库密码。以 SQLite 为例：
+提供 [SQLite Compose 示例](deploy/compose.sqlite.yml) 和 [MySQL Compose 示例](deploy/compose.mysql.yml)。两者使用 Caddy 提供 HTTPS；请将域名解析到部署主机，并设置持久保存的 `POSTWARDEN_MASTER_KEY`、`POSTWARDEN_DOMAIN`，MySQL 模式还要设置数据库密码。以 SQLite 为例（主密钥只生成一次并妥善保存）：
 
 ```sh
 docker compose -f deploy/compose.sqlite.yml build
-docker compose -f deploy/compose.sqlite.yml run --rm postwarden postwarden init-admin admin
+docker compose -f deploy/compose.sqlite.yml run --rm postwarden init admin
 docker compose -f deploy/compose.sqlite.yml up -d
 ```
 
