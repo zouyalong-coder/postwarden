@@ -25,6 +25,28 @@
 
 两个发送入口均要求 `Idempotency-Key` 请求头。幂等键在同一 Token 下跨入口唯一，指向同一请求内容及发送模式；复用键但改变内容或模式返回冲突。幂等记录与审计记录默认共同保留 90 天，到期后不再保证该键去重。
 
+## 模板插件
+
+模板发送仍使用 `POST /api/v1/messages`（异步）或 `POST /api/v1/messages/send`（同步）。请求中的 `template` 指定构建期插件及其输入；其他邮件字段可省略，由插件在邮件成形阶段填写或替换：
+
+```json
+{
+  "template": {
+    "plugin_id": "mail-template",
+    "input": {
+      "scenario_id": "order.paid",
+      "variables": {"order_id": "A1001", "amount": "99.00"}
+    }
+  }
+}
+```
+
+`mail-template` 插件可替换发件身份、主题、文本/HTML 正文和 `to`、`cc`、`bcc` 地址。模板中的 `{{order_id}}` 等占位符从 `variables` 取值；变量缺失或类型不合适时拒绝请求。HTML 正文中的变量会转义。若模板启用 `allow_caller_recipients`，请求提供的地址会追加到固定地址；否则由模板地址取代请求地址。最终邮件必须至少有一个 To 地址。调用方仍需持有模板所选发件身份的 Token 授权。
+
+核心只按 `template.plugin_id` 找到已启用插件，并把 `template.input` 交给该插件的 `compose` 钩子。插件返回成形后的草稿，核心重新校验地址、内容和发件身份权限，再进入普通发送钩子与 SMTP 流程。插件可通过 `manage` 暴露受管理员会话和 CSRF 保护的管理资源；`mail-template` 的资源位于 `/api/v1/admin/plugins/mail-template/templates`。停用插件后，新模板请求会被拒绝，管理资源返回 `409 plugin_disabled`；重新启用后可继续管理已有模板。
+
+模板请求的幂等比较基于插件 ID、插件输入、请求中的邮件字段及发送模式。同一个键重试时返回原消息，即使模板后来修改、删除或插件停用；更换键才会按当前配置重新成形。
+
 ## 发送与查询接口
 
 ### `POST /api/v1/messages/send`：同步发送
@@ -67,6 +89,7 @@
 | `/api/v1/admin/messages/{id}/resume` | 管理员请求继续处理插件暂停的异步消息；Worker 再次执行发送前校验 |
 | `/api/v1/admin/messages/{id}/reject` | 管理员拒绝插件暂停的消息并进入终态 |
 | `/api/v1/admin/plugins` | 查看构建中已注册插件、启停和配置；需要处理插件持有的待办状态后才能禁用相关插件 |
+| `/api/v1/admin/plugins/{id}/{resource}` | 插件管理资源；`mail-template/templates` 用于创建、列出和维护邮件模板 |
 
 SMTP 凭证的读取响应永不回传密码或密文；更新时可以不提供密码以保持原值。删除账号或身份会立即停止使用并处理关联待发送任务，保留必要的历史标识供审计引用；账号凭证随删除擦除。禁用持有待办任务的插件前必须先处理其暂停状态。
 

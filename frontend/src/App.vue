@@ -1,5 +1,8 @@
 <script setup>
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import MailTemplate from './plugins/MailTemplate.vue'
+
+const pluginComponents = { 'mail-template': MailTemplate }
 
 const session = ref({ authenticated: false, login_name: null })
 const login = reactive({ login_name: '', password: '' })
@@ -26,13 +29,17 @@ const pluginConfigText = ref('')
 const tabs = [{ id: 'accounts', label: 'SMTP 账号' }, { id: 'tokens', label: 'API Token' }, { id: 'plugins', label: '插件' }, { id: 'history', label: '发送历史' }]
 function tabFromPath() {
   const path = window.location.pathname.replace(/\/$/, '')
+  if (path.startsWith('/plugins/')) return 'plugins'
   return tabs.find(tab => `/${tab.id}` === path)?.id || 'accounts'
 }
 const activeTab = ref(tabFromPath())
+const pluginPageId = ref(window.location.pathname.match(/^\/plugins\/([^/]+)\/?$/)?.[1] || null)
+const pluginPage = computed(() => plugins.value.find(plugin => plugin.id === pluginPageId.value))
 const configuredAccountId = ref(null)
 
 function selectTab(id) {
   activeTab.value = id
+  pluginPageId.value = null
   const path = `/${id}`
   if (window.location.pathname !== path) {
     const url = new URL(window.location.href)
@@ -41,7 +48,17 @@ function selectTab(id) {
   }
 }
 
-function syncTabFromPath() { activeTab.value = tabFromPath() }
+function syncTabFromPath() {
+  activeTab.value = tabFromPath()
+  pluginPageId.value = window.location.pathname.match(/^\/plugins\/([^/]+)\/?$/)?.[1] || null
+}
+
+function openPluginPage(plugin) {
+  if (!plugin.enabled || !pluginComponents[plugin.id]) return
+  pluginPageId.value = plugin.id
+  activeTab.value = 'plugins'
+  window.history.pushState(null, '', `/plugins/${encodeURIComponent(plugin.id)}`)
+}
 
 function moveTab(direction) {
   const index = tabs.findIndex(tab => tab.id === activeTab.value)
@@ -92,7 +109,9 @@ async function loadMessages() {
   for (const key of ['token_id', 'sender_identity_id', 'status']) if (historyFilters[key]) params.set(key, historyFilters[key])
   messages.value = await api(`/messages?${params.toString()}`)
 }
-async function loadAdminData() { await Promise.all([loadAccounts(), loadIdentities(), loadTokens(), loadPlugins(), loadMessages()]) }
+async function loadAdminData() {
+  await Promise.all([loadAccounts(), loadIdentities(), loadTokens(), loadPlugins(), loadMessages()])
+}
 
 async function loadSession() {
   try {
@@ -572,16 +591,28 @@ onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
 
         </div>
         <div v-show="activeTab === 'plugins'" id="panel-plugins" class="tab-content" role="tabpanel" aria-labelledby="tab-plugins">
-        <section class="panel" aria-labelledby="plugins-title">
+        <section v-if="!pluginPageId" class="panel" aria-labelledby="plugins-title">
           <div class="panel-heading split-heading"><div><h2 id="plugins-title">构建时插件</h2><p>插件配置在服务端加密保存。这里不会回显配置内容。</p></div><span class="count">{{ plugins.length }} 个插件</span></div>
           <p v-if="plugins.length === 0" class="empty-state">当前构建没有注册插件。</p>
-          <div v-for="plugin in plugins" :key="plugin.id" class="account-row plugin-row">
+          <div v-for="plugin in plugins" :key="plugin.id" class="plugin-entry">
+          <div class="account-row plugin-row">
             <div class="token-summary"><div class="account-name">{{ plugin.id }} <span :class="['badge', plugin.enabled ? 'enabled' : 'disabled']">{{ plugin.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">版本 {{ plugin.version }} · 执行顺序 {{ plugin.execution_order }} · {{ plugin.has_config ? '已有加密配置' : '使用默认配置' }}</div>
               <div v-if="pluginEditingId === plugin.id" class="plugin-editor"><label>完整 JSON 配置<textarea v-model="pluginConfigText" rows="6" spellcheck="false" :placeholder="plugin.has_config ? '请输入完整的新配置 JSON 对象' : '{}'" required></textarea><small>出于安全原因，已有配置不会回显。保存时会用此 JSON 完整替换原配置。</small></label><div class="row-actions"><button class="primary-button" :disabled="busy || !pluginConfigText.trim()" @click="savePlugin(plugin)">保存设置</button><button class="text-button" :disabled="busy" @click="cancelPluginEdit">取消</button></div></div>
             </div>
-            <div v-if="pluginEditingId !== plugin.id" class="row-actions"><button class="text-button" :disabled="busy" @click="editPlugin(plugin)">配置</button><button class="text-button" :disabled="busy" @click="togglePlugin(plugin)">{{ plugin.enabled ? '停用' : '启用' }}</button></div>
+            <div v-if="pluginEditingId !== plugin.id" class="row-actions"><button v-if="pluginComponents[plugin.id]" class="text-button" :disabled="busy || !plugin.enabled" @click="openPluginPage(plugin)">管理</button><button class="text-button" :disabled="busy || !plugin.enabled" @click="editPlugin(plugin)">配置</button><button class="text-button" :disabled="busy" @click="togglePlugin(plugin)">{{ plugin.enabled ? '停用' : '启用' }}</button></div>
+          </div>
           </div>
         </section>
+        <div v-else class="plugin-page">
+          <button class="text-button plugin-back" type="button" @click="selectTab('plugins')">← 返回插件列表</button>
+          <template v-if="pluginPage && pluginPage.enabled && pluginComponents[pluginPage.id]">
+            <component :is="pluginComponents[pluginPage.id]" :plugin="pluginPage" :identities="identities" :accounts="accounts" />
+          </template>
+          <section v-else class="panel" aria-label="插件管理不可用">
+            <h2>{{ pluginPage?.id || pluginPageId }}</h2>
+            <p class="helper-text">{{ pluginPage?.enabled === false ? '插件已停用，启用后才能管理。' : '此插件没有可用的管理页面。' }}</p>
+          </section>
+        </div>
 
         </div>
         <div v-show="activeTab === 'history'" id="panel-history" class="tab-content" role="tabpanel" aria-labelledby="tab-history">

@@ -10,6 +10,7 @@ mod sender_identities;
 mod smtp_accounts;
 mod smtp_tests;
 mod smtp_transport;
+mod templates;
 mod tokens;
 mod worker;
 

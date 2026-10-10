@@ -14,6 +14,7 @@ use postwarden_plugin_api::{
     Attachment as PluginAttachment, DeliveryResult, MailDraft, Mailbox, Recipient,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -34,17 +35,28 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct SendRequest {
+    #[serde(default)]
     sender_identity_id: String,
+    #[serde(default)]
     to: Vec<String>,
     #[serde(default)]
     cc: Vec<String>,
     #[serde(default)]
     bcc: Vec<String>,
+    #[serde(default)]
     subject: String,
     text: Option<String>,
     html: Option<String>,
     #[serde(default)]
     attachments: Vec<JsonAttachment>,
+    #[serde(default)]
+    template: Option<TemplateInvocation>,
+}
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct TemplateInvocation {
+    plugin_id: String,
+    input: Value,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +107,7 @@ struct ErrorBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     status_url: Option<String>,
 }
+#[derive(Debug)]
 struct ApiError(StatusCode, &'static str, &'static str, Option<String>);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -297,11 +310,87 @@ async fn submit_request(
         )
     })?;
     let (input, attachments) = parse_body(&parts.headers, &raw)?;
-    validate_request(&input, &attachments)?;
+    let source = input
+        .template
+        .as_ref()
+        .map(|_| serde_json::to_string(&(&input, &attachments)))
+        .transpose()
+        .map_err(|_| internal())?;
+    if let Some(source) = source.as_deref() {
+        let digest = request_digest(mode, &MailDraft::default(), Some(source))?;
+        if let Some(existing) = find_idempotent(&state.database, &principal.id, &key).await? {
+            return replay_existing(&state, &principal.id, mode, &digest, existing).await;
+        }
+    }
+    let id = format!("msg_{}", Uuid::new_v4().simple());
+    let mut draft = make_draft(&input, &attachments, None)?;
+    if let Some(template) = &input.template {
+        validate_template_input(&input, &attachments)?;
+        match state
+            .plugins
+            .compose(&template.plugin_id, &id, &draft, &template.input)
+            .await
+        {
+            Ok(FlowOutcome::Continue { draft: modified }) => draft = modified,
+            Ok(FlowOutcome::Reject { code, .. }) => {
+                let (status, safe_code) = match code.as_str() {
+                    "template_not_found" => (StatusCode::NOT_FOUND, "template_not_found"),
+                    "template_scenario_required" => {
+                        (StatusCode::BAD_REQUEST, "template_scenario_required")
+                    }
+                    "template_variables_invalid" => (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "template_variables_invalid",
+                    ),
+                    _ => (StatusCode::UNPROCESSABLE_ENTITY, "template_rejected"),
+                };
+                return Err(ApiError(
+                    status,
+                    safe_code,
+                    "Template could not form a message",
+                    None,
+                ));
+            }
+            Ok(FlowOutcome::Hold { .. }) => return Err(internal()),
+            Err(crate::plugins::ManagerError::InvalidDecision {
+                reason: "plugin is disabled",
+                ..
+            }) => {
+                return Err(ApiError(
+                    StatusCode::CONFLICT,
+                    "plugin_disabled",
+                    "Template plugin is disabled",
+                    None,
+                ));
+            }
+            Err(crate::plugins::ManagerError::InvalidDecision {
+                reason: "plugin is not registered",
+                ..
+            }) => {
+                return Err(ApiError(
+                    StatusCode::NOT_FOUND,
+                    "plugin_not_found",
+                    "Template plugin is not registered",
+                    None,
+                ));
+            }
+            Err(error) => {
+                tracing::error!(error = %error, "template compose failed");
+                return Err(ApiError(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "template_unavailable",
+                    "Template plugin is unavailable or failed",
+                    None,
+                ));
+            }
+        }
+    } else {
+        validate_request(&input, &attachments)?;
+    }
     let allowed = crate::tokens::authorize_identity(
         &state.database,
         &principal.id,
-        &input.sender_identity_id,
+        &draft.sender_identity_id,
     )
     .await
     .map_err(|e| {
@@ -317,7 +406,7 @@ async fn submit_request(
         ));
     }
     let Some(identity) =
-        load_identity(&state.database, &state.crypto, &input.sender_identity_id).await?
+        load_identity(&state.database, &state.crypto, &draft.sender_identity_id).await?
     else {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
@@ -326,15 +415,13 @@ async fn submit_request(
             None,
         ));
     };
-    let mut draft = make_draft(&input, &attachments, &identity)?;
-    let id = format!("msg_{}", Uuid::new_v4().simple());
-    let digest = request_digest(mode, &draft)?;
-    let recipient_data = serde_json::to_vec(&RecipientAudit {
-        to: input.to.clone(),
-        cc: input.cc.clone(),
-        bcc: input.bcc.clone(),
-    })
-    .map_err(|_| internal())?;
+    draft.from = Some(Mailbox {
+        name: Some(identity.display_name.clone()),
+        address: identity.email_address.clone(),
+    });
+    validate_draft(&draft, &identity)?;
+    let digest = request_digest(mode, &draft, source.as_deref())?;
+    let recipient_data = serde_json::to_vec(&recipient_audit(&draft)).map_err(|_| internal())?;
     let recipient_cipher = state
         .crypto
         .encrypt(&recipient_data)
@@ -348,63 +435,7 @@ async fn submit_request(
     };
 
     if let Some(existing) = find_idempotent(&state.database, &principal.id, &key).await? {
-        if existing.0 != digest || existing.1 != mode {
-            return Err(ApiError(
-                StatusCode::CONFLICT,
-                "idempotency_conflict",
-                "Idempotency-Key was used with a different request",
-                Some(existing.2),
-            ));
-        }
-        if existing.3 == "processing" {
-            return Err(ApiError(
-                StatusCode::CONFLICT,
-                "message_processing",
-                "The original request is still processing",
-                Some(existing.2),
-            ));
-        }
-        if existing.3 == "processing" {
-            return Err(ApiError(
-                StatusCode::CONFLICT,
-                "message_processing",
-                "The original request is still processing",
-                Some(existing.2),
-            ));
-        }
-        if mode == "sync" && existing.3 != "smtp_accepted" {
-            let (http, code) = match existing.3.as_str() {
-                "rejected" => (StatusCode::UNPROCESSABLE_ENTITY, "message_rejected"),
-                "outcome_unknown" => (StatusCode::SERVICE_UNAVAILABLE, "outcome_unknown"),
-                _ => (StatusCode::BAD_GATEWAY, "message_failed"),
-            };
-            return Err(ApiError(
-                http,
-                code,
-                "The original message did not succeed",
-                Some(existing.2),
-            ));
-        }
-        let accepted_at = if mode == "sync" {
-            fetch_status(&state, &existing.2, Some(&principal.id), false)
-                .await?
-                .and_then(|v| v.finished_at)
-        } else {
-            None
-        };
-        return Ok((
-            if mode == "async" {
-                StatusCode::ACCEPTED
-            } else {
-                StatusCode::OK
-            },
-            Json(SendResponse {
-                message_id: existing.2.clone(),
-                status: existing.3,
-                status_url: format!("/api/v1/messages/{}", existing.2),
-                smtp_accepted_at: accepted_at,
-            }),
-        ));
+        return replay_existing(&state, &principal.id, mode, &digest, existing).await;
     }
 
     let payload = if mode == "async" {
@@ -427,7 +458,7 @@ async fn submit_request(
         &state,
         &principal.id,
         &id,
-        &input.sender_identity_id,
+        &draft.sender_identity_id,
         identity.version,
         mode,
         &key,
@@ -794,10 +825,33 @@ fn validate_request(r: &SendRequest, files: &[PluginAttachment]) -> Result<(), A
 fn valid_email(s: &str) -> bool {
     s.len() <= 320 && lettre::Address::from_str(s).is_ok()
 }
+fn validate_template_input(r: &SendRequest, files: &[PluginAttachment]) -> Result<(), ApiError> {
+    let Some(template) = &r.template else {
+        return Err(bad());
+    };
+    if template.plugin_id.is_empty()
+        || template.plugin_id.len() > 128
+        || !template
+            .plugin_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || !template.input.is_object()
+        || r.to.len() + r.cc.len() + r.bcc.len() > 100
+        || r.to
+            .iter()
+            .chain(&r.cc)
+            .chain(&r.bcc)
+            .any(|a| !valid_email(a))
+        || files.len() > MAX_ATTACHMENTS
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
 fn make_draft(
     r: &SendRequest,
     files: &[PluginAttachment],
-    identity: &Identity,
+    identity: Option<&Identity>,
 ) -> Result<MailDraft, ApiError> {
     let mailbox = |name: Option<String>, address: String| Mailbox { name, address };
     let mut recipients = Vec::new();
@@ -809,11 +863,8 @@ fn make_draft(
             .map(|a| Recipient::Bcc(mailbox(None, a.clone()))),
     );
     Ok(MailDraft {
-        sender_identity_id: identity.id.clone(),
-        from: Some(mailbox(
-            Some(identity.display_name.clone()),
-            identity.email_address.clone(),
-        )),
+        sender_identity_id: r.sender_identity_id.clone(),
+        from: identity.map(|i| mailbox(Some(i.display_name.clone()), i.email_address.clone())),
         reply_to: None,
         recipients,
         subject: r.subject.clone(),
@@ -822,9 +873,90 @@ fn make_draft(
         attachments: files.to_vec(),
     })
 }
-fn request_digest(mode: &str, draft: &MailDraft) -> Result<Vec<u8>, ApiError> {
-    let bytes = serde_json::to_vec(&(mode, draft)).map_err(|_| internal())?;
+fn recipient_audit(draft: &MailDraft) -> RecipientAudit {
+    let mut audit = RecipientAudit {
+        to: Vec::new(),
+        cc: Vec::new(),
+        bcc: Vec::new(),
+    };
+    for recipient in &draft.recipients {
+        match recipient {
+            Recipient::To(mailbox) => audit.to.push(mailbox.address.clone()),
+            Recipient::Cc(mailbox) => audit.cc.push(mailbox.address.clone()),
+            Recipient::Bcc(mailbox) => audit.bcc.push(mailbox.address.clone()),
+        }
+    }
+    audit
+}
+fn request_digest(
+    mode: &str,
+    draft: &MailDraft,
+    source: Option<&str>,
+) -> Result<Vec<u8>, ApiError> {
+    let bytes = match source {
+        Some(template_request) => serde_json::to_vec(&(mode, "template", template_request)),
+        None => serde_json::to_vec(&(mode, draft)),
+    }
+    .map_err(|_| internal())?;
     Ok(Sha256::digest(bytes).to_vec())
+}
+
+async fn replay_existing(
+    state: &AppState,
+    token_id: &str,
+    mode: &str,
+    digest: &[u8],
+    existing: (Vec<u8>, String, String, String),
+) -> Result<(StatusCode, Json<SendResponse>), ApiError> {
+    if existing.0 != digest || existing.1 != mode {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "idempotency_conflict",
+            "Idempotency-Key was used with a different request",
+            Some(existing.2),
+        ));
+    }
+    if existing.3 == "processing" {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "message_processing",
+            "The original request is still processing",
+            Some(existing.2),
+        ));
+    }
+    if mode == "sync" && existing.3 != "smtp_accepted" {
+        let (http, code) = match existing.3.as_str() {
+            "rejected" => (StatusCode::UNPROCESSABLE_ENTITY, "message_rejected"),
+            "outcome_unknown" => (StatusCode::SERVICE_UNAVAILABLE, "outcome_unknown"),
+            _ => (StatusCode::BAD_GATEWAY, "message_failed"),
+        };
+        return Err(ApiError(
+            http,
+            code,
+            "The original message did not succeed",
+            Some(existing.2),
+        ));
+    }
+    let accepted_at = if mode == "sync" {
+        fetch_status(state, &existing.2, Some(token_id), false)
+            .await?
+            .and_then(|v| v.finished_at)
+    } else {
+        None
+    };
+    Ok((
+        if mode == "async" {
+            StatusCode::ACCEPTED
+        } else {
+            StatusCode::OK
+        },
+        Json(SendResponse {
+            message_id: existing.2.clone(),
+            status: existing.3,
+            status_url: format!("/api/v1/messages/{}", existing.2),
+            smtp_accepted_at: accepted_at,
+        }),
+    ))
 }
 
 async fn find_idempotent(
@@ -1659,8 +1791,42 @@ mod tests {
     };
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::{json, Value};
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Arc};
     use tower::ServiceExt;
+
+    struct TestResolver;
+
+    #[postwarden_plugin_api::async_trait]
+    impl postwarden_plugin_api::Plugin for TestResolver {
+        fn id(&self) -> &'static str {
+            "test-resolver"
+        }
+        fn version(&self) -> &'static str {
+            "1"
+        }
+        async fn compose(
+            &self,
+            draft: &MailDraft,
+            input: &Value,
+            _context: &postwarden_plugin_api::PluginContext,
+        ) -> Result<postwarden_plugin_api::HookDecision, postwarden_plugin_api::PluginError>
+        {
+            if input.get("scenario_id").and_then(Value::as_str) != Some("custom.alert") {
+                return Ok(postwarden_plugin_api::HookDecision::Reject {
+                    code: "unknown_scenario".into(),
+                });
+            }
+            let mut changed = draft.clone();
+            changed.sender_identity_id = "ident_test".into();
+            changed.recipients = vec![Recipient::To(Mailbox {
+                name: None,
+                address: "rcpt@example.org".into(),
+            })];
+            changed.subject = "Custom alert".into();
+            changed.text_body = Some("Handled by plugin".into());
+            Ok(postwarden_plugin_api::HookDecision::Modify { draft: changed })
+        }
+    }
 
     async fn fixture() -> (axum::Router, String, String, String, Database, AppState) {
         let config = Config {
@@ -1818,5 +1984,140 @@ mod tests {
             unreachable!()
         };
         assert_eq!(status, "failed");
+    }
+
+    #[tokio::test]
+    async fn template_plugin_uses_existing_send_pipeline_and_can_be_disabled() {
+        let (app, raw, token, identity, db, state) = fixture().await;
+        let now = Utc::now().to_rfc3339();
+        if let Database::Sqlite(pool) = &db {
+            sqlx::query("INSERT INTO mail_templates(id,scenario_id,name,enabled,allow_caller_recipients,sender_identity_id,subject_template,text_template,html_template,to_json,cc_json,bcc_json,version,created_at,updated_at) VALUES('tpl_test','order.paid','Order paid',1,0,?,'Order {{order_id}}','Paid {{order_id}}',NULL,'[\"rcpt@example.org\"]','[]','[]',1,?,?)")
+                .bind(&identity).bind(&now).bind(&now).execute(pool).await.unwrap();
+        }
+        let payload = json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}}});
+        let response = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-1"),
+            Some(payload.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let first: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), MAX_REQUEST).await.unwrap())
+                .unwrap();
+        let id = first["message_id"].as_str().unwrap();
+        let recorded = fetch_status(&state, id, Some(&token), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recorded.recipients.unwrap(), vec!["rcpt@example.org"]);
+        if let Database::Sqlite(pool) = &db {
+            let cipher: Vec<u8> = sqlx::query_scalar(
+                "SELECT payload_ciphertext FROM message_payloads WHERE message_id=?",
+            )
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            let payload: MessagePayload =
+                serde_json::from_slice(&state.crypto.decrypt(&cipher).unwrap()).unwrap();
+            assert_eq!(payload.draft.subject, "Order A1001");
+            assert_eq!(payload.draft.text_body.as_deref(), Some("Paid A1001"));
+        }
+        let duplicate = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-1"),
+            Some(payload),
+        )
+        .await;
+        assert_eq!(duplicate.status(), StatusCode::ACCEPTED);
+        let second: Value =
+            serde_json::from_slice(&to_bytes(duplicate.into_body(), MAX_REQUEST).await.unwrap())
+                .unwrap();
+        assert_eq!(second["message_id"], id);
+        let extra_recipient = call(&app, Method::POST, "/api/v1/messages", &raw, Some("template-2"), Some(json!({"to":["extra@example.org"],"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1002"}}}}))).await;
+        assert_eq!(extra_recipient.status(), StatusCode::ACCEPTED);
+        let extra: Value = serde_json::from_slice(
+            &to_bytes(extra_recipient.into_body(), MAX_REQUEST)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let extra_recorded = fetch_status(
+            &state,
+            extra["message_id"].as_str().unwrap(),
+            Some(&token),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(extra_recorded.recipients.unwrap(), vec!["rcpt@example.org"]);
+        let missing = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-3"),
+            Some(json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid"}}})),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        if let Database::Sqlite(pool) = &db {
+            sqlx::query("UPDATE plugin_configs SET enabled=0 WHERE plugin_id='mail-template'")
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        let disabled = call(&app, Method::POST, "/api/v1/messages", &raw, Some("template-disabled"), Some(json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1003"}}}}))).await;
+        assert_eq!(disabled.status(), StatusCode::CONFLICT);
+        if let Database::Sqlite(pool) = &db {
+            sqlx::query("DELETE FROM mail_templates WHERE id='tpl_test'")
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        let retry = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-1"),
+            Some(json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}}})),
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::ACCEPTED);
+        let retried: Value =
+            serde_json::from_slice(&to_bytes(retry.into_body(), MAX_REQUEST).await.unwrap())
+                .unwrap();
+        assert_eq!(retried["message_id"], id);
+    }
+
+    #[tokio::test]
+    async fn a_custom_plugin_can_compose_a_message() {
+        let (_app, raw, _token, _identity, db, mut state) = fixture().await;
+        state.plugins =
+            PluginManager::with_plugins(db, state.crypto.clone(), vec![Arc::new(TestResolver)])
+                .await
+                .unwrap();
+        let app = Router::new()
+            .nest("/api/v1", super::router())
+            .with_state(state);
+        let response = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("plugin-event-1"),
+            Some(json!({"template":{"plugin_id":"test-resolver","input":{"scenario_id":"custom.alert"}}})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 }

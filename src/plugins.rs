@@ -5,12 +5,14 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, put},
     Json, Router,
 };
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use postwarden_plugin_api::{
-    DeliveryResult, HookDecision, MailDraft, Plugin, PluginContext, PluginError,
+    DeliveryResult, HookDecision, MailDraft, ManagementOperation, ManagementResult, Plugin,
+    PluginContext, PluginError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -105,10 +107,100 @@ pub struct PluginInfo {
 }
 
 impl PluginManager {
+    /// Ask the named enabled plugin to form an email before sender authorization.
+    pub async fn compose(
+        &self,
+        plugin_id: &str,
+        message_id: &str,
+        draft: &MailDraft,
+        input: &Value,
+    ) -> Result<FlowOutcome, ManagerError> {
+        let plugin = self
+            .plugin(plugin_id)
+            .ok_or_else(|| ManagerError::InvalidDecision {
+                plugin_id: plugin_id.to_owned(),
+                reason: "plugin is not registered",
+            })?;
+        let row =
+            self.config_row(plugin_id)
+                .await?
+                .ok_or_else(|| ManagerError::InvalidDecision {
+                    plugin_id: plugin_id.to_owned(),
+                    reason: "plugin configuration is missing",
+                })?;
+        if !row.enabled {
+            return Err(ManagerError::InvalidDecision {
+                plugin_id: plugin_id.to_owned(),
+                reason: "plugin is disabled",
+            });
+        }
+        let context = self.context(plugin.as_ref(), message_id, self.config_value(row)?, None);
+        match plugin
+            .compose(draft, input, &context)
+            .await
+            .map_err(|source| ManagerError::Plugin {
+                plugin_id: plugin_id.to_owned(),
+                source,
+            })? {
+            HookDecision::Modify { draft } => Ok(FlowOutcome::Continue { draft }),
+            HookDecision::Reject { code } if safe_code(&code) => Ok(FlowOutcome::Reject {
+                plugin_id: plugin_id.to_owned(),
+                code,
+            }),
+            _ => Err(ManagerError::InvalidDecision {
+                plugin_id: plugin_id.to_owned(),
+                reason: "compose must modify or reject the draft",
+            }),
+        }
+    }
+
+    pub async fn manage(
+        &self,
+        plugin_id: &str,
+        resource: &str,
+        operation: ManagementOperation,
+        input: Option<Value>,
+    ) -> Result<ManagementResult, ManagerError> {
+        let plugin = self
+            .plugin(plugin_id)
+            .ok_or_else(|| ManagerError::InvalidDecision {
+                plugin_id: plugin_id.to_owned(),
+                reason: "plugin is not registered",
+            })?;
+        let row =
+            self.config_row(plugin_id)
+                .await?
+                .ok_or_else(|| ManagerError::InvalidDecision {
+                    plugin_id: plugin_id.to_owned(),
+                    reason: "plugin configuration is missing",
+                })?;
+        if !row.enabled {
+            return Err(ManagerError::InvalidDecision {
+                plugin_id: plugin_id.to_owned(),
+                reason: "plugin is disabled",
+            });
+        }
+        let context = self.context(plugin.as_ref(), "", self.config_value(row)?, None);
+        plugin
+            .manage(resource, operation, input, &context)
+            .await
+            .map_err(|source| ManagerError::Plugin {
+                plugin_id: plugin_id.to_owned(),
+                source,
+            })
+    }
     /// Construct a registry and persist defaults for every linked plugin.
     /// Startup fails if a plugin version changed while it still owns held state.
     pub async fn new(database: Database, crypto: Crypto) -> Result<Self, ManagerError> {
-        Self::with_plugins(database, crypto, vec![Arc::new(ExamplePlugin)]).await
+        Self::with_plugins(
+            database.clone(),
+            crypto,
+            vec![
+                Arc::new(ExamplePlugin),
+                Arc::new(crate::templates::TemplatePlugin::new(database)),
+            ],
+        )
+        .await
     }
 
     /// Construct a registry with application plugins. Stable IDs must be unique.
@@ -440,20 +532,21 @@ impl PluginManager {
         });
         plugins
             .into_iter()
-            .map(|(plugin, row)| {
-                let config = match row.config_ciphertext {
-                    None => json!({}),
-                    Some(encrypted) => {
-                        let plain = self
-                            .crypto
-                            .decrypt(&encrypted)
-                            .map_err(|_| ManagerError::Crypto)?;
-                        serde_json::from_slice(&plain).map_err(|_| ManagerError::Serialization)?
-                    }
-                };
-                Ok((plugin, config))
-            })
+            .map(|(plugin, row)| Ok((plugin, self.config_value(row)?)))
             .collect()
+    }
+
+    fn config_value(&self, row: ConfigRow) -> Result<Value, ManagerError> {
+        match row.config_ciphertext {
+            None => Ok(json!({})),
+            Some(encrypted) => {
+                let plain = self
+                    .crypto
+                    .decrypt(&encrypted)
+                    .map_err(|_| ManagerError::Crypto)?;
+                serde_json::from_slice(&plain).map_err(|_| ManagerError::Serialization)
+            }
+        }
     }
 
     async fn read_configs(&self) -> Result<Vec<ConfigRow>, ManagerError> {
@@ -709,6 +802,106 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/plugins", get(list_plugins))
         .route("/plugins/{id}", put(update_plugin))
+        .route(
+            "/plugins/{id}/{resource}",
+            get(list_resource).post(create_resource),
+        )
+        .route(
+            "/plugins/{id}/{resource}/{item_id}",
+            get(get_resource)
+                .put(update_resource)
+                .delete(delete_resource),
+        )
+}
+
+fn management_response(result: ManagementResult) -> Response {
+    let status = StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    match result.body {
+        Some(body) => (status, Json(body)).into_response(),
+        None => status.into_response(),
+    }
+}
+
+async fn list_resource(
+    _: AdminAuth,
+    State(state): State<AppState>,
+    Path((id, resource)): Path<(String, String)>,
+) -> Result<Response, PluginApiError> {
+    state
+        .plugins
+        .manage(&id, &resource, ManagementOperation::List, None)
+        .await
+        .map(management_response)
+        .map_err(Into::into)
+}
+
+async fn create_resource(
+    _: AdminAuth,
+    State(state): State<AppState>,
+    Path((id, resource)): Path<(String, String)>,
+    Json(input): Json<Value>,
+) -> Result<Response, PluginApiError> {
+    state
+        .plugins
+        .manage(&id, &resource, ManagementOperation::Create, Some(input))
+        .await
+        .map(management_response)
+        .map_err(Into::into)
+}
+
+async fn get_resource(
+    _: AdminAuth,
+    State(state): State<AppState>,
+    Path((id, resource, item_id)): Path<(String, String, String)>,
+) -> Result<Response, PluginApiError> {
+    state
+        .plugins
+        .manage(
+            &id,
+            &resource,
+            ManagementOperation::Get { id: item_id },
+            None,
+        )
+        .await
+        .map(management_response)
+        .map_err(Into::into)
+}
+
+async fn update_resource(
+    _: AdminAuth,
+    State(state): State<AppState>,
+    Path((id, resource, item_id)): Path<(String, String, String)>,
+    Json(input): Json<Value>,
+) -> Result<Response, PluginApiError> {
+    state
+        .plugins
+        .manage(
+            &id,
+            &resource,
+            ManagementOperation::Update { id: item_id },
+            Some(input),
+        )
+        .await
+        .map(management_response)
+        .map_err(Into::into)
+}
+
+async fn delete_resource(
+    _: AdminAuth,
+    State(state): State<AppState>,
+    Path((id, resource, item_id)): Path<(String, String, String)>,
+) -> Result<Response, PluginApiError> {
+    state
+        .plugins
+        .manage(
+            &id,
+            &resource,
+            ManagementOperation::Delete { id: item_id },
+            None,
+        )
+        .await
+        .map(management_response)
+        .map_err(Into::into)
 }
 
 #[derive(Deserialize)]
@@ -775,6 +968,11 @@ impl From<ManagerError> for PluginApiError {
             {
                 Self(StatusCode::NOT_FOUND, "not_found", "Plugin not found")
             }
+            ManagerError::InvalidDecision { reason, .. } if reason == "plugin is disabled" => Self(
+                StatusCode::CONFLICT,
+                "plugin_disabled",
+                "Enable the plugin before managing its resources",
+            ),
             ManagerError::InvalidDecision { reason, .. } if reason.contains("held states") => Self(
                 StatusCode::CONFLICT,
                 "plugin_has_held_messages",

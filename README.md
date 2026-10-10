@@ -21,6 +21,20 @@ PostWarden 是自托管的 SMTP 发送代理和授权中心。调用方使用 Po
 
 启动脚本在本地和镜像中相同：容器默认执行 `postwarden-launcher start`；初始化时执行 `postwarden-launcher init admin`。两种方式都由 Rust 服务运行迁移并启动同进程 Worker。
 
+## 场景邮件模板
+
+管理员可在「插件」中启用 `mail-template`，再通过该插件的「管理」入口进入模板专页：设置场景 ID、发件身份、主题及正文占位符，并配置固定收件人和抄送人。插件停用时管理入口不可用，管理 API 也会拒绝请求。调用方继续使用普通邮件发送 API，提供模板插件 ID、场景 ID、变量和幂等键。例如异步发送：
+
+```sh
+curl -X POST https://postwarden.example.com/api/v1/messages \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Idempotency-Key: order-paid-A1001' \
+  -H 'Content-Type: application/json' \
+  -d '{"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}}}'
+```
+
+同步入口仍为 `/api/v1/messages/send`。模板插件形成草稿后，核心核对 Token 对发件身份的授权并执行原有发送流程。管理员可以在「插件」中停用 `mail-template`；停用后新的模板请求会被拒绝。其他构建期插件可实现 `compose` 和 `manage` 来扩展成形规则与管理资源。详见 [API 说明](docs/api.md)。
+
 ## SMTP 账号与测试邮件
 
 在管理页面的「SMTP 账号」中填写发信服务器，而非 IMAP 收信服务器。端口与加密方式需要配套：465 通常选择「隐式 TLS」（连接建立时立即加密，也称 SSL/TLS），587 通常选择「STARTTLS」（连接后升级为加密）；以邮箱服务商提供的配置为准。「PLAIN」和「LOGIN」是 SMTP 账号认证方式，不代表连接是否加密。用户名通常是完整邮箱地址，密码通常是邮箱服务商生成的客户端专用密码或授权码。保存凭证后，页面不会回显密码。

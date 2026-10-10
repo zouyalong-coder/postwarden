@@ -41,9 +41,15 @@ pub fn router(web_dist: &Path, state: AppState) -> Router {
         )
         .fallback(api_not_found);
 
+    let index = web_dist.join("index.html");
     Router::new()
         .route("/health", get(health))
         .nest("/api/v1", api)
+        .route_service("/accounts", ServeFile::new(&index))
+        .route_service("/tokens", ServeFile::new(&index))
+        .route_service("/plugins", ServeFile::new(&index))
+        .route_service("/plugins/{id}", ServeFile::new(&index))
+        .route_service("/history", ServeFile::new(&index))
         .fallback_service(static_files)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -282,6 +288,136 @@ mod tests {
         let Database::Sqlite(pool) = &database else {
             unreachable!()
         };
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO sender_identities(id,smtp_account_id,display_name,email_address,envelope_from,version,enabled,created_at,updated_at) VALUES('template_identity',?,'Template','template@example.com','template@example.com',1,1,?,?)")
+            .bind(id).bind(&now).bind(&now).execute(pool).await.unwrap();
+        let template_path = "/api/v1/admin/plugins/mail-template/templates";
+        let template_input = json!({
+            "scenario_id":"order.created", "name":"Order created", "enabled":true,
+            "sender_identity_id":"template_identity", "subject_template":"Order {{order_id}}",
+            "text_template":"Created {{order_id}}", "to":["receiver@example.com"]
+        });
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                template_path,
+                Some(&cookies),
+                None,
+                Some(template_input.clone())
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        let created_template = request(
+            &app,
+            Method::POST,
+            template_path,
+            Some(&cookies),
+            Some(csrf_value),
+            Some(template_input),
+        )
+        .await;
+        assert_eq!(created_template.status(), StatusCode::CREATED);
+        let template: Value = serde_json::from_slice(
+            &to_bytes(created_template.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let template_id = template["id"].as_str().unwrap();
+        assert_eq!(
+            request(&app, Method::GET, template_path, Some(&cookies), None, None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let plugin_path = "/api/v1/admin/plugins/mail-template";
+        assert_eq!(
+            request(
+                &app,
+                Method::PUT,
+                plugin_path,
+                Some(&cookies),
+                Some(csrf_value),
+                Some(json!({"enabled":false}))
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(&app, Method::GET, template_path, Some(&cookies), None, None)
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::POST,
+                template_path,
+                Some(&cookies),
+                Some(csrf_value),
+                Some(json!({"scenario_id":"blocked"}))
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::PUT,
+                &format!("{template_path}/{template_id}"),
+                Some(&cookies),
+                Some(csrf_value),
+                Some(json!({"name":"Blocked edit"}))
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::DELETE,
+                &format!("{template_path}/{template_id}"),
+                Some(&cookies),
+                Some(csrf_value),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::PUT,
+                plugin_path,
+                Some(&cookies),
+                Some(csrf_value),
+                Some(json!({"enabled":true}))
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(
+                &app,
+                Method::DELETE,
+                &format!("{template_path}/{template_id}"),
+                Some(&cookies),
+                Some(csrf_value),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
         let encrypted: Vec<u8> =
             sqlx::query_scalar("SELECT credential_ciphertext FROM smtp_accounts WHERE id = ?")
                 .bind(id)

@@ -46,6 +46,22 @@ pub struct MailDraft {
     pub attachments: Vec<Attachment>,
 }
 
+/// Operations exposed by a plugin through the authenticated admin API.
+#[derive(Clone, Debug)]
+pub enum ManagementOperation {
+    List,
+    Get { id: String },
+    Create,
+    Update { id: String },
+    Delete { id: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagementResult {
+    pub status: u16,
+    pub body: Option<Value>,
+}
+
 #[derive(Clone, Debug)]
 pub struct PluginContext {
     pub plugin_id: String,
@@ -119,6 +135,28 @@ pub trait Plugin: Send + Sync + 'static {
     fn id(&self) -> &'static str;
     /// Code version used to interpret persisted config and held state.
     fn version(&self) -> &'static str;
+
+    /// Form a draft from plugin-specific request data before sender authorization.
+    /// The host revalidates the result and then runs the normal mail hooks.
+    async fn compose(
+        &self,
+        _draft: &MailDraft,
+        _input: &Value,
+        _context: &PluginContext,
+    ) -> Result<HookDecision, PluginError> {
+        Ok(HookDecision::Continue)
+    }
+
+    /// Plugin-owned admin resource. The host handles session and CSRF checks.
+    async fn manage(
+        &self,
+        _resource: &str,
+        _operation: ManagementOperation,
+        _input: Option<Value>,
+        _context: &PluginContext,
+    ) -> Result<ManagementResult, PluginError> {
+        Ok(ManagementResult { status: 404, body: None })
+    }
 
     async fn before_submit(
         &self,
