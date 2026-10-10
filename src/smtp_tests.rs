@@ -184,7 +184,7 @@ fn settings(state: &AppState, row: &AccountRow) -> ApiResult<SmtpSettings> {
 }
 
 async fn test_connection(
-    _: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<TestResult>> {
@@ -193,6 +193,18 @@ async fn test_connection(
     let success = smtp_transport::test_connection(&smtp_settings)
         .await
         .is_ok();
+    persist_audit(
+        &state.database,
+        &admin.id,
+        &account.id,
+        "smtp_test_connection",
+        if success {
+            "connected"
+        } else {
+            "connection_failed"
+        },
+    )
+    .await;
     Ok(Json(if success {
         TestResult {
             success: true,
@@ -253,7 +265,14 @@ async fn test_message(
         outcome = outcome,
         "admin SMTP test message"
     );
-    persist_audit(&state.database, &admin.id, &account.id, outcome).await;
+    persist_audit(
+        &state.database,
+        &admin.id,
+        &account.id,
+        "smtp_test_message",
+        outcome,
+    )
+    .await;
     Ok(Json(match outcome {
         "accepted" => TestResult {
             success: true,
@@ -273,16 +292,22 @@ async fn test_message(
     }))
 }
 
-async fn persist_audit(db: &Database, admin_id: &str, account_id: &str, outcome: &str) {
+async fn persist_audit(
+    db: &Database,
+    admin_id: &str,
+    account_id: &str,
+    action: &str,
+    outcome: &str,
+) {
     let id = Uuid::new_v4().to_string();
     let created_at = chrono::Utc::now();
     let result: Result<(), sqlx::Error> = match db {
         Database::Sqlite(pool) => sqlx::query(
-            "INSERT INTO admin_audit_events(id,admin_id,action,resource_id,outcome,created_at) \
-                 VALUES(?,?,'smtp_test_message',?,?,?)",
+            "INSERT INTO admin_audit_events(id,admin_id,action,resource_id,outcome,created_at) VALUES(?,?,?,?,?,?)",
         )
         .bind(id)
         .bind(admin_id)
+        .bind(action)
         .bind(account_id)
         .bind(outcome)
         .bind(created_at.to_rfc3339())
@@ -290,11 +315,11 @@ async fn persist_audit(db: &Database, admin_id: &str, account_id: &str, outcome:
         .await
         .map(|_| ()),
         Database::Mysql(pool) => sqlx::query(
-            "INSERT INTO admin_audit_events(id,admin_id,action,resource_id,outcome,created_at) \
-                 VALUES(?,?,'smtp_test_message',?,?,?)",
+            "INSERT INTO admin_audit_events(id,admin_id,action,resource_id,outcome,created_at) VALUES(?,?,?,?,?,?)",
         )
         .bind(id)
         .bind(admin_id)
+        .bind(action)
         .bind(account_id)
         .bind(outcome)
         .bind(created_at.naive_utc())

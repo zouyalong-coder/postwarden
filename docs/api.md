@@ -64,6 +64,8 @@
 | `/api/v1/admin/sender-identities` | 管理 Sender Identity 及与 SMTP Account 的关联 |
 | `/api/v1/admin/tokens` | 创建、列表、读取元数据、更新权限或有效期、禁用及撤销 Token；明文只在创建时出现 |
 | `/api/v1/admin/messages` | 按时间、Token、身份、状态查询发送历史与尝试记录 |
+| `/api/v1/admin/messages/{id}/resume` | 管理员请求继续处理插件暂停的异步消息；Worker 再次执行发送前校验 |
+| `/api/v1/admin/messages/{id}/reject` | 管理员拒绝插件暂停的消息并进入终态 |
 | `/api/v1/admin/plugins` | 查看构建中已注册插件、启停和配置；需要处理插件持有的待办状态后才能禁用相关插件 |
 
 SMTP 凭证的读取响应永不回传密码或密文；更新时可以不提供密码以保持原值。删除账号或身份会立即停止使用并处理关联待发送任务，保留必要的历史标识供审计引用；账号凭证随删除擦除。禁用持有待办任务的插件前必须先处理其暂停状态。

@@ -319,6 +319,18 @@ async function applyHistoryFilters() {
   catch (cause) { error.value = cause.message }
   finally { busy.value = false }
 }
+async function resolveHeld(message, action) {
+  const verb = action === 'resume' ? '继续处理并可能发送' : '拒绝'
+  if (!window.confirm(`${verb}暂停消息 ${message.id}？`)) return
+  clearNotice(); busy.value = true
+  try {
+    await api(`/messages/${message.id}/${action}`, { method: 'POST' })
+    notice.value = action === 'resume' ? '已请求继续处理，刷新记录查看结果。' : '暂停消息已拒绝。'
+    await loadMessages()
+    if (messageDetail.value?.id === message.id) messageDetail.value = await api(`/messages/${message.id}`)
+  } catch (cause) { error.value = cause.message }
+  finally { busy.value = false }
+}
 function formatTime(value) { return value ? new Date(value).toLocaleString() : '—' }
 
 onMounted(loadSession)
@@ -446,7 +458,7 @@ onMounted(loadSession)
           <p v-if="messages.length === 0" class="empty-state history-empty">没有匹配的发送记录。</p>
           <div v-for="message in messages" :key="message.id" class="account-row history-row">
             <div class="token-summary"><div class="account-name"><span :class="['badge', `status-${message.status}`]">{{ message.status }}</span><code>{{ message.id }}</code></div><div class="account-details">{{ formatTime(message.created_at) }} · {{ message.mode }} · 身份版本 {{ message.identity_version }}</div><div class="account-details">Token {{ tokens.find(token => token.id === message.token_id)?.name || message.token_id }} · {{ identities.find(identity => identity.id === message.sender_identity_id)?.display_name || message.sender_identity_id }}<span v-if="message.last_error_code"> · 错误码 {{ message.last_error_code }}</span></div></div>
-            <button class="text-button" :disabled="busy" @click="openMessage(message)">详情</button>
+            <div class="row-actions"><button v-if="message.status === 'held'" class="text-button" :disabled="busy" @click="resolveHeld(message, 'resume')">继续</button><button v-if="message.status === 'held'" class="text-button danger" :disabled="busy" @click="resolveHeld(message, 'reject')">拒绝</button><button class="text-button" :disabled="busy" @click="openMessage(message)">详情</button></div>
           </div>
           <article v-if="messageDetail" class="message-detail" aria-live="polite">
             <div class="panel-heading split-heading"><div><h3>消息详情</h3><p>{{ messageDetail.id }}</p></div><button class="text-button" @click="messageDetail = null">关闭</button></div>
