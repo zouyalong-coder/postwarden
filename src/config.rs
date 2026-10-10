@@ -10,6 +10,7 @@ pub enum DatabaseKind {
 pub struct Config {
     pub listen_addr: SocketAddr,
     pub database_kind: DatabaseKind,
+    pub database_url: String,
     pub web_dist: PathBuf,
 }
 
@@ -18,8 +19,8 @@ impl Config {
         let listen_addr = env::var("POSTWARDEN_LISTEN")
             .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
             .parse()?;
-        let database_url = env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite://data/postwarden.db".to_owned());
+        let database_url =
+            env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://data/postwarden.db".to_owned());
         let database_kind = if database_url.starts_with("mysql://") {
             DatabaseKind::Mysql
         } else if database_url.starts_with("sqlite:") {
@@ -34,6 +35,7 @@ impl Config {
         Ok(Self {
             listen_addr,
             database_kind,
+            database_url,
             web_dist,
         })
     }
