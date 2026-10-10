@@ -1,5 +1,7 @@
 //! Build-time plugin registry, persisted settings, and hook execution.
 
+mod storage;
+
 use std::sync::Arc;
 
 use axum::{
@@ -15,7 +17,7 @@ use postwarden_plugin_api::{
     PluginContext, PluginError,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sqlx::FromRow;
 
 use crate::{auth::AdminAuth, crypto::Crypto, database::Database, http::AppState};
@@ -54,6 +56,10 @@ pub enum ManagerError {
         plugin_id: String,
         source: PluginError,
     },
+    InvalidConfig {
+        plugin_id: String,
+        source: PluginError,
+    },
     InvalidDecision {
         plugin_id: String,
         reason: &'static str,
@@ -67,6 +73,9 @@ impl std::fmt::Display for ManagerError {
             Self::Crypto => f.write_str("plugin data encryption operation failed"),
             Self::Serialization => f.write_str("plugin data serialization failed"),
             Self::Plugin { plugin_id, source } => write!(f, "plugin {plugin_id} failed: {source}"),
+            Self::InvalidConfig { plugin_id, source } => {
+                write!(f, "plugin {plugin_id} rejected configuration: {source}")
+            }
             Self::InvalidDecision { plugin_id, reason } => {
                 write!(f, "plugin {plugin_id} returned invalid decision: {reason}")
             }
@@ -104,6 +113,7 @@ pub struct PluginInfo {
     pub enabled: bool,
     pub execution_order: i32,
     pub has_config: bool,
+    pub config_template: Value,
 }
 
 impl PluginManager {
@@ -134,7 +144,12 @@ impl PluginManager {
                 reason: "plugin is disabled",
             });
         }
-        let context = self.context(plugin.as_ref(), message_id, self.config_value(row)?, None);
+        let context = self.context(
+            plugin.as_ref(),
+            message_id,
+            self.config_value(plugin.as_ref(), row)?,
+            None,
+        );
         match plugin
             .compose(draft, input, &context)
             .await
@@ -180,7 +195,12 @@ impl PluginManager {
                 reason: "plugin is disabled",
             });
         }
-        let context = self.context(plugin.as_ref(), "", self.config_value(row)?, None);
+        let context = self.context(
+            plugin.as_ref(),
+            "",
+            self.config_value(plugin.as_ref(), row)?,
+            None,
+        );
         plugin
             .manage(resource, operation, input, &context)
             .await
@@ -192,15 +212,8 @@ impl PluginManager {
     /// Construct a registry and persist defaults for every linked plugin.
     /// Startup fails if a plugin version changed while it still owns held state.
     pub async fn new(database: Database, crypto: Crypto) -> Result<Self, ManagerError> {
-        Self::with_plugins(
-            database.clone(),
-            crypto,
-            vec![
-                Arc::new(ExamplePlugin),
-                Arc::new(crate::templates::TemplatePlugin::new(database)),
-            ],
-        )
-        .await
+        let registered = crate::plugins::registered_plugins(database.clone());
+        Self::with_plugins(database, crypto, registered).await
     }
 
     /// Construct a registry with application plugins. Stable IDs must be unique.
@@ -236,6 +249,12 @@ impl PluginManager {
             .unwrap_or(-1)
             + 1;
         for plugin in self.plugins.iter() {
+            plugin
+                .validate_config(&plugin.default_config())
+                .map_err(|source| ManagerError::InvalidConfig {
+                    plugin_id: plugin.id().to_owned(),
+                    source,
+                })?;
             let old = existing.iter().find(|row| row.plugin_id == plugin.id());
             if let Some(old) = old {
                 if old.plugin_version != plugin.version() {
@@ -425,6 +444,7 @@ impl PluginManager {
                     enabled: row.enabled,
                     execution_order: row.execution_order,
                     has_config: row.config_ciphertext.is_some(),
+                    config_template: plugin.config_template(),
                 })
             })
             .collect()
@@ -510,6 +530,11 @@ impl PluginManager {
             message_id: message_id.to_owned(),
             config,
             held_state,
+            storage: Arc::new(storage::PluginStorage::new(
+                self.database.clone(),
+                self.crypto.clone(),
+                plugin.id(),
+            )),
         }
     }
 
@@ -532,13 +557,16 @@ impl PluginManager {
         });
         plugins
             .into_iter()
-            .map(|(plugin, row)| Ok((plugin, self.config_value(row)?)))
+            .map(|(plugin, row)| {
+                let config = self.config_value(plugin.as_ref(), row)?;
+                Ok((plugin, config))
+            })
             .collect()
     }
 
-    fn config_value(&self, row: ConfigRow) -> Result<Value, ManagerError> {
+    fn config_value(&self, plugin: &dyn Plugin, row: ConfigRow) -> Result<Value, ManagerError> {
         match row.config_ciphertext {
-            None => Ok(json!({})),
+            None => Ok(plugin.default_config()),
             Some(encrypted) => {
                 let plain = self
                     .crypto
@@ -683,6 +711,14 @@ impl PluginManager {
                 });
             }
         }
+        if let Some(config) = &update.config {
+            plugin
+                .validate_config(config)
+                .map_err(|source| ManagerError::InvalidConfig {
+                    plugin_id: id.to_owned(),
+                    source,
+                })?;
+        }
         self.update_config(
             id,
             update.enabled.unwrap_or(row.enabled),
@@ -726,76 +762,6 @@ fn parse_mysql_time(value: Option<&str>) -> Result<Option<NaiveDateTime>, Manage
                 })
         })
         .transpose()
-}
-
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExampleConfig {
-    subject_prefix: Option<String>,
-    reject_subject_contains: Option<String>,
-    hold_subject_contains: Option<String>,
-}
-
-struct ExamplePlugin;
-
-#[postwarden_plugin_api::async_trait]
-impl Plugin for ExamplePlugin {
-    fn id(&self) -> &'static str {
-        "example-policy"
-    }
-    fn version(&self) -> &'static str {
-        "1"
-    }
-
-    async fn before_submit(
-        &self,
-        draft: &MailDraft,
-        context: &PluginContext,
-    ) -> Result<HookDecision, PluginError> {
-        let config: ExampleConfig = serde_json::from_value(context.config.clone())
-            .map_err(|error| PluginError::new(format!("invalid example-policy config: {error}")))?;
-        if config
-            .reject_subject_contains
-            .as_ref()
-            .is_some_and(|needle| draft.subject.contains(needle))
-        {
-            return Ok(HookDecision::Reject {
-                code: "example_policy_rejected".to_owned(),
-            });
-        }
-        if let Some(prefix) = config.subject_prefix.filter(|prefix| !prefix.is_empty()) {
-            let mut changed = draft.clone();
-            if !changed.subject.starts_with(&prefix) {
-                changed.subject = format!("{prefix}{}", changed.subject);
-                return Ok(HookDecision::Modify { draft: changed });
-            }
-        }
-        Ok(HookDecision::Continue)
-    }
-
-    async fn before_send(
-        &self,
-        draft: &MailDraft,
-        context: &PluginContext,
-    ) -> Result<HookDecision, PluginError> {
-        let config: ExampleConfig = serde_json::from_value(context.config.clone())
-            .map_err(|error| PluginError::new(format!("invalid example-policy config: {error}")))?;
-        if config
-            .hold_subject_contains
-            .as_ref()
-            .is_some_and(|needle| draft.subject.contains(needle))
-            && context.held_state.is_none()
-        {
-            return Ok(HookDecision::Hold {
-                state: json!({"reason":"example policy review"}),
-                resume_at: None,
-            });
-        }
-        if context.held_state.is_some() {
-            return Ok(HookDecision::Continue);
-        }
-        Ok(HookDecision::Continue)
-    }
 }
 
 pub fn router() -> Router<AppState> {
@@ -963,6 +929,11 @@ impl From<ManagerError> for PluginApiError {
     fn from(error: ManagerError) -> Self {
         tracing::error!(error = %error, "plugin management request failed");
         match error {
+            ManagerError::InvalidConfig { .. } => Self(
+                StatusCode::BAD_REQUEST,
+                "invalid_plugin_config",
+                "Plugin configuration is invalid",
+            ),
             ManagerError::InvalidDecision { reason, .. }
                 if reason == "plugin is not registered" =>
             {

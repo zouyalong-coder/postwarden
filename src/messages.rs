@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{database::Database, http::AppState, plugins::FlowOutcome, smtp_transport};
+use crate::{database::Database, http::AppState, plugin_runtime::FlowOutcome, smtp_transport};
 
 const MAX_REQUEST: usize = 24 * 1024 * 1024;
 const MAX_ATTACHMENT: usize = 8 * 1024 * 1024;
@@ -352,7 +352,7 @@ async fn submit_request(
                 ));
             }
             Ok(FlowOutcome::Hold { .. }) => return Err(internal()),
-            Err(crate::plugins::ManagerError::InvalidDecision {
+            Err(crate::plugin_runtime::ManagerError::InvalidDecision {
                 reason: "plugin is disabled",
                 ..
             }) => {
@@ -363,7 +363,7 @@ async fn submit_request(
                     None,
                 ));
             }
-            Err(crate::plugins::ManagerError::InvalidDecision {
+            Err(crate::plugin_runtime::ManagerError::InvalidDecision {
                 reason: "plugin is not registered",
                 ..
             }) => {
@@ -1783,7 +1783,7 @@ mod tests {
     use crate::{
         config::{Config, DatabaseKind, RetentionPolicy},
         database::Database,
-        plugins::PluginManager,
+        plugin_runtime::PluginManager,
     };
     use axum::{
         body::{to_bytes, Body},

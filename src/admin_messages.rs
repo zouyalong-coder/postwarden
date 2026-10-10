@@ -467,7 +467,7 @@ mod tests {
         crypto::Crypto,
         database::Database,
         http::AppState,
-        plugins::PluginManager,
+        plugin_runtime::PluginManager,
     };
 
     #[tokio::test]

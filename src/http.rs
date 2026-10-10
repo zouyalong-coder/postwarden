@@ -9,7 +9,7 @@ use tower_http::{
 
 use crate::{
     admin_messages, auth, config::RetentionPolicy, crypto::Crypto, database::Database, messages,
-    plugins, sender_identities, smtp_accounts, smtp_tests, tokens,
+    plugin_runtime, sender_identities, smtp_accounts, smtp_tests, tokens,
 };
 
 #[derive(Clone)]
@@ -17,7 +17,7 @@ pub struct AppState {
     pub database: Database,
     pub crypto: Crypto,
     pub cookie_secure: bool,
-    pub plugins: plugins::PluginManager,
+    pub plugins: plugin_runtime::PluginManager,
     pub retention: RetentionPolicy,
 }
 
@@ -37,7 +37,7 @@ pub fn router(web_dist: &Path, state: AppState) -> Router {
                 .merge(admin_messages::router())
                 .merge(sender_identities::router())
                 .merge(tokens::router())
-                .merge(plugins::router()),
+                .merge(plugin_runtime::router()),
         )
         .fallback(api_not_found);
 
@@ -108,7 +108,7 @@ mod tests {
         config::{Config, DatabaseKind, RetentionPolicy},
         crypto::Crypto,
         database::Database,
-        plugins::PluginManager,
+        plugin_runtime::PluginManager,
     };
 
     fn set_cookie(response: &Response<Body>, name: &str) -> String {
@@ -334,6 +334,19 @@ mod tests {
             StatusCode::OK
         );
         let plugin_path = "/api/v1/admin/plugins/mail-template";
+        assert_eq!(
+            request(
+                &app,
+                Method::PUT,
+                "/api/v1/admin/plugins/example-policy",
+                Some(&cookies),
+                Some(csrf_value),
+                Some(json!({"config":{"unknown_setting":true}}))
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(
             request(
                 &app,

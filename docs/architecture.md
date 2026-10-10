@@ -14,7 +14,7 @@ PostWarden 是自托管的 SMTP 发送代理和授权中心，不接收邮件，
 | SMTP | 使用成熟的 Rust 邮件库（候选：lettre），封装在发送适配器后；正式选定版本需验证 TLS、认证、附件、超时和错误分类 |
 | 管理页面 | Vue 构建为静态资源，由 Rust 服务在同一地址提供；发布构建将资源嵌入可执行文件 |
 | 数据库 | SQLite（默认）及 MySQL（MVP 正式支持）；使用 SQLx 和数据库专用迁移 |
-| 插件 | 独立 Rust crate，在构建时链接、启动时注册；增加插件需要重新构建 |
+| 插件 | 公共契约位于 `crates/postwarden-plugin-api`；宿主运行时和通用存储位于 `src/plugin_runtime/`；插件实现位于 `src/plugins/<name>.rs`，由 `src/plugins/mod.rs` 声明并构建期注册。前端页面在 `frontend/src/plugins/` 中组织并在 `registry.js` 注册。插件在构建时编译、启动时注册；增加插件需要重新构建 |
 
 单个发布构建同时包含 SQLite 与 MySQL 适配器，运行时通过配置选用其一。修改数据库配置只选择新的数据源，不搬迁旧数据。
 
@@ -72,7 +72,9 @@ MVP 提供可实际使用的构建期插件机制：公共插件接口 crate、�
 | 发送前 | 审核、策略检查、发送窗口 | 继续并可修改、拒绝、暂停 |
 | 结果产生后 | 通知、回调、外部审计 | 观察结果；失败仅记录，不篡改发送结果 |
 
-插件修改收件人、主题或内容后，核心重新进行格式、大小和策略校验；插件不能通过流程返回值绕过 Sender Identity 授权。插件状态使用命名空间存储，避免直接依赖 SQLite/MySQL 方言。插件可以通过 `manage` 在统一的管理员认证和 CSRF 防护下提供自己的资源；管理页面通过构建期组件注册表在相应插件入口展示资源界面。增加第三方插件及其管理界面仍需重新构建服务与前端。内置 `mail-template` 插件验证了成形钩子、管理资源和启停流程。
+插件修改收件人、主题或内容后，核心重新进行格式、大小和策略校验；插件不能通过流程返回值绕过 Sender Identity 授权。核心负责加密保存配置和暂停状态，并向插件提供按 ID 隔离的加密 JSON KV 存储。插件可用 `default_config`、`config_template`、`validate_config` 定义默认配置、编辑示例和保存校验；`compose` 自行解析插件输入。插件可以通过 `manage` 在统一的管理员认证和 CSRF 防护下提供自己的资源；管理页面和可选的配置编辑器通过构建期组件注册表展示。后端插件实现放在 `src/plugins/<name>.rs`，由 `src/plugins/mod.rs` 注册；专用前端页面放在 `frontend/src/plugins/<Name>.vue`，由 `frontend/src/plugins/registry.js` 注册。增加第三方插件及其管理界面仍需重新构建服务与前端。内置 `mail-template` 插件验证了成形钩子、管理资源和启停流程；其现有关系型模板表仍由插件代码维护。
+
+插件代码按公共契约、宿主运行时和具体实现分层。`crates/postwarden-plugin-api` 定义插件 trait、上下文和钩子类型；`src/plugin_runtime/mod.rs` 管理插件生命周期、调用编排和管理路由，`src/plugin_runtime/storage.rs` 提供通用存储；`src/plugins/<name>.rs` 实现插件自身行为，`src/plugins/mod.rs` 只声明模块并完成构建期注册。维护现有插件只需修改对应的 `src/plugins/<name>.rs`；新增插件需要增加实现并在 `src/plugins/mod.rs` 注册，无需修改公共 trait 或宿主。只有宿主能力或公共契约变化时才改动 runtime 或 API crate。
 
 构建期插件与主服务处于同一进程，属于受信任代码；插件作者和部署者必须信任其代码。常规插件错误可以被处理并记录，但同进程代码不具备沙箱隔离。运行时上传插件包、WASM 执行器及原生动态库装载均不在 MVP。若未来加入运行时插件，继续沿用流程阶段和结果语义，再定义独立的跨进程或 WASM 接口。对尚有暂停任务的插件，禁用或升级须先处理其待办状态，不能直接丢弃恢复所需的代码或数据。
 

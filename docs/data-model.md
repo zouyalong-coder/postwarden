@@ -18,8 +18,9 @@
 | `message_events` | `id`, `message_id`, `event_type`, `plugin_id`, `created_at`, `safe_details` | 记录入队、授权失败、插件拒绝或暂停、状态变更及清理等生命周期事件 |
 | `plugin_configs` | `plugin_id`, `plugin_version`, `enabled`, `execution_order`, `config_ciphertext`, `updated_at` | 配置构建时已注册的插件；可能包含秘密的配置加密存储 |
 | `plugin_message_states` | `message_id`, `plugin_id`, `plugin_version`, `state_ciphertext`, `resume_at` | 暂停及恢复状态；插件禁用或升级不得使等待中的任务丢失状态 |
+| `plugin_storage` | `plugin_id`, `storage_key`, `encrypted_value` | 插件私有的加密 JSON KV 数据，按插件 ID 隔离 |
 
-`message_payloads` 和 `plugin_message_states` 中与邮件内容有关的数据遵守同一终态保留规则。插件若需要独立的模板等数据，使用带 `plugin_id` 命名空间的存储接口及其专用迁移或版本管理机制，不直接依赖具体数据库的 SQL。
+`message_payloads` 和 `plugin_message_states` 中与邮件内容有关的数据遵守同一终态保留规则。插件的简单私有数据可使用按 `plugin_id` 隔离的 `plugin_storage`。需要关系查询的插件可自行维护专用表和迁移；内置模板插件即采用此方式，并分别处理 SQLite/MySQL 的差异。
 
 收件人属于审计所需的敏感元数据：在消息记录中加密保留，并在有权查询时解密。MVP 的历史筛选以时间、Token、发件身份和状态为主；不以收件人全文搜索作为前提。密送人不得写入普通日志或邮件头。
 

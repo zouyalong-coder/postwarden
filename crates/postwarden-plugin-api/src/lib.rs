@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 pub use async_trait::async_trait;
 
@@ -62,13 +62,22 @@ pub struct ManagementResult {
     pub body: Option<Value>,
 }
 
-#[derive(Clone, Debug)]
+/// Host-managed, encrypted JSON storage scoped to the current plugin ID.
+#[async_trait]
+pub trait PluginStore: Send + Sync {
+    async fn get(&self, key: &str) -> Result<Option<Value>, PluginError>;
+    async fn put(&self, key: &str, value: &Value) -> Result<(), PluginError>;
+    async fn delete(&self, key: &str) -> Result<bool, PluginError>;
+}
+
+#[derive(Clone)]
 pub struct PluginContext {
     pub plugin_id: String,
     pub plugin_version: String,
     pub message_id: String,
     pub config: Value,
     pub held_state: Option<Value>,
+    pub storage: Arc<dyn PluginStore>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -135,6 +144,27 @@ pub trait Plugin: Send + Sync + 'static {
     fn id(&self) -> &'static str;
     /// Code version used to interpret persisted config and held state.
     fn version(&self) -> &'static str;
+
+    /// Configuration used until an administrator saves a replacement.
+    fn default_config(&self) -> Value {
+        Value::Object(Default::default())
+    }
+
+    /// A safe example shown when an administrator first edits this plugin's
+    /// configuration. It is not applied until the administrator saves it.
+    fn config_template(&self) -> Value {
+        self.default_config()
+    }
+
+    /// Validate configuration before the host persists it. Plugins should
+    /// deserialize into their own typed configuration and check its semantics.
+    fn validate_config(&self, config: &Value) -> Result<(), PluginError> {
+        if config.is_object() {
+            Ok(())
+        } else {
+            Err(PluginError::new("configuration must be a JSON object"))
+        }
+    }
 
     /// Form a draft from plugin-specific request data before sender authorization.
     /// The host revalidates the result and then runs the normal mail hooks.

@@ -33,7 +33,9 @@ curl -X POST https://postwarden.example.com/api/v1/messages \
   -d '{"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}}}'
 ```
 
-同步入口仍为 `/api/v1/messages/send`。模板插件形成草稿后，核心核对 Token 对发件身份的授权并执行原有发送流程。管理员可以在「插件」中停用 `mail-template`；停用后新的模板请求会被拒绝。其他构建期插件可实现 `compose` 和 `manage` 来扩展成形规则与管理资源。详见 [API 说明](docs/api.md)。
+同步入口仍为 `/api/v1/messages/send`。模板插件形成草稿后，核心核对 Token 对发件身份的授权并执行原有发送流程。管理员可以在「插件」中停用 `mail-template`；停用后新的模板请求会被拒绝。其他构建期插件可实现 `compose` 和 `manage` 来扩展成形规则与管理资源。接入步骤见 [插件开发](docs/plugin-development.md)，请求格式见 [API 说明](docs/api.md)。
+
+插件公共契约位于 `crates/postwarden-plugin-api`，宿主运行时与通用存储位于 `src/plugin_runtime/`，具体实现位于 `src/plugins/<name>.rs`。维护现有插件只需修改其实现文件；新增插件时在 `src/plugins/mod.rs` 声明并注册。专用前端页面放在 `frontend/src/plugins/<Name>.vue`，并在 `frontend/src/plugins/registry.js` 注册。
 
 ## SMTP 账号与测试邮件
 

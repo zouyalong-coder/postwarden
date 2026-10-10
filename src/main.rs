@@ -5,12 +5,12 @@ mod crypto;
 mod database;
 mod http;
 mod messages;
+mod plugin_runtime;
 mod plugins;
 mod sender_identities;
 mod smtp_accounts;
 mod smtp_tests;
 mod smtp_transport;
-mod templates;
 mod tokens;
 mod worker;
 
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let crypto = crypto::Crypto::from_env()?;
     let database = database::Database::connect(&config).await?;
-    let plugins = plugins::PluginManager::new(database.clone(), crypto.clone()).await?;
+    let plugins = plugin_runtime::PluginManager::new(database.clone(), crypto.clone()).await?;
     let state = http::AppState {
         database,
         crypto,

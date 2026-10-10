@@ -1,8 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import MailTemplate from './plugins/MailTemplate.vue'
-
-const pluginComponents = { 'mail-template': MailTemplate }
+import { hasPluginManagementPage, pluginDescriptor } from './plugins/registry.js'
 
 const session = ref({ authenticated: false, login_name: null })
 const login = reactive({ login_name: '', password: '' })
@@ -54,7 +52,7 @@ function syncTabFromPath() {
 }
 
 function openPluginPage(plugin) {
-  if (!plugin.enabled || !pluginComponents[plugin.id]) return
+  if (!plugin.enabled || !hasPluginManagementPage(plugin.id)) return
   pluginPageId.value = plugin.id
   activeTab.value = 'plugins'
   window.history.pushState(null, '', `/plugins/${encodeURIComponent(plugin.id)}`)
@@ -407,20 +405,28 @@ async function copyTokenHandoff() {
 
 function editPlugin(plugin) {
   clearNotice(); pluginEditingId.value = plugin.id
-  pluginConfigText.value = plugin.has_config ? '' : (plugin.id === 'example-policy' ? '{\n  "subject_prefix": "[PostWarden] ",\n  "reject_subject_contains": "blocked",\n  "hold_subject_contains": "review"\n}' : '{}')
+  const descriptor = pluginDescriptor(plugin.id)
+  const defaults = plugin.config_template ?? descriptor.defaultConfig ?? {}
+  pluginConfigText.value = plugin.has_config ? '' : JSON.stringify(defaults, null, 2)
 }
 function cancelPluginEdit() { pluginEditingId.value = null; pluginConfigText.value = '' }
 async function savePlugin(plugin) {
-  clearNotice(); busy.value = true
   try {
     const config = JSON.parse(pluginConfigText.value)
+    if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('配置必须是 JSON 对象。')
+    await savePluginConfig(plugin, config)
+  } catch (cause) { error.value = cause instanceof SyntaxError ? '插件配置不是有效的 JSON。' : cause.message }
+}
+async function savePluginConfig(plugin, config) {
+  clearNotice(); busy.value = true
+  try {
     if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('配置必须是 JSON 对象。')
     await api(`/plugins/${plugin.id}`, { method: 'PUT', body: { enabled: plugin.enabled,
       execution_order: Number(plugin.execution_order), config } })
     notice.value = '插件设置已保存。'
     cancelPluginEdit()
     await loadPlugins()
-  } catch (cause) { error.value = cause instanceof SyntaxError ? '插件配置不是有效的 JSON。' : cause.message }
+  } catch (cause) { error.value = cause.message }
   finally { busy.value = false }
 }
 async function togglePlugin(plugin) {
@@ -597,16 +603,19 @@ onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
           <div v-for="plugin in plugins" :key="plugin.id" class="plugin-entry">
           <div class="account-row plugin-row">
             <div class="token-summary"><div class="account-name">{{ plugin.id }} <span :class="['badge', plugin.enabled ? 'enabled' : 'disabled']">{{ plugin.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">版本 {{ plugin.version }} · 执行顺序 {{ plugin.execution_order }} · {{ plugin.has_config ? '已有加密配置' : '使用默认配置' }}</div>
-              <div v-if="pluginEditingId === plugin.id" class="plugin-editor"><label>完整 JSON 配置<textarea v-model="pluginConfigText" rows="6" spellcheck="false" :placeholder="plugin.has_config ? '请输入完整的新配置 JSON 对象' : '{}'" required></textarea><small>出于安全原因，已有配置不会回显。保存时会用此 JSON 完整替换原配置。</small></label><div class="row-actions"><button class="primary-button" :disabled="busy || !pluginConfigText.trim()" @click="savePlugin(plugin)">保存设置</button><button class="text-button" :disabled="busy" @click="cancelPluginEdit">取消</button></div></div>
+              <div v-if="pluginEditingId === plugin.id" class="plugin-editor">
+                <component v-if="pluginDescriptor(plugin.id).configComponent" :is="pluginDescriptor(plugin.id).configComponent" :plugin="plugin" :busy="busy" @save="savePluginConfig(plugin, $event)" @cancel="cancelPluginEdit" />
+                <template v-else><label>完整 JSON 配置<textarea v-model="pluginConfigText" rows="6" spellcheck="false" :placeholder="plugin.has_config ? '请输入完整的新配置 JSON 对象' : '{}'" required></textarea><small>出于安全原因，已有配置不会回显。保存时会用此 JSON 完整替换原配置。</small></label><div class="row-actions"><button class="primary-button" :disabled="busy || !pluginConfigText.trim()" @click="savePlugin(plugin)">保存设置</button><button class="text-button" :disabled="busy" @click="cancelPluginEdit">取消</button></div></template>
+              </div>
             </div>
-            <div v-if="pluginEditingId !== plugin.id" class="row-actions"><button v-if="pluginComponents[plugin.id]" class="text-button" :disabled="busy || !plugin.enabled" @click="openPluginPage(plugin)">管理</button><button class="text-button" :disabled="busy || !plugin.enabled" @click="editPlugin(plugin)">配置</button><button class="text-button" :disabled="busy" @click="togglePlugin(plugin)">{{ plugin.enabled ? '停用' : '启用' }}</button></div>
+            <div v-if="pluginEditingId !== plugin.id" class="row-actions"><button v-if="hasPluginManagementPage(plugin.id)" class="text-button" :disabled="busy || !plugin.enabled" @click="openPluginPage(plugin)">管理</button><button class="text-button" :disabled="busy || !plugin.enabled" @click="editPlugin(plugin)">配置</button><button class="text-button" :disabled="busy" @click="togglePlugin(plugin)">{{ plugin.enabled ? '停用' : '启用' }}</button></div>
           </div>
           </div>
         </section>
         <div v-else class="plugin-page">
           <button class="text-button plugin-back" type="button" @click="selectTab('plugins')">← 返回插件列表</button>
-          <template v-if="pluginPage && pluginPage.enabled && pluginComponents[pluginPage.id]">
-            <component :is="pluginComponents[pluginPage.id]" :plugin="pluginPage" :identities="identities" :accounts="accounts" />
+          <template v-if="pluginPage && pluginPage.enabled && hasPluginManagementPage(pluginPage.id)">
+            <component :is="pluginDescriptor(pluginPage.id).managementComponent" :plugin="pluginPage" :identities="identities" :accounts="accounts" />
           </template>
           <section v-else class="panel" aria-label="插件管理不可用">
             <h2>{{ pluginPage?.id || pluginPageId }}</h2>
