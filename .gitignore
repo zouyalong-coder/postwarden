@@ -1,1 +1,33 @@
-midscene_run/
+# Rust build output (keep Cargo.lock for this application)
+/target/
+**/*.rs.bk
+rustc-ice-*.txt
+
+# Vue/Vite dependencies and generated assets
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+/secrets/
+*.pem
+*.key
+
+# Local databases and runtime data
+/data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Local tools, editor, and OS output
+/midscene_run/
+.DS_Store
+.idea/
+.vscode/
+*.swp

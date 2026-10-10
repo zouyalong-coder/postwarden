@@ -1,0 +1,15 @@
+[package]
+name = "postwarden"
+version = "0.1.0"
+edition = "2021"
+description = "Self-hosted SMTP sending proxy and authorization service"
+license = "Apache-2.0"
+
+[dependencies]
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "mysql", "migrate"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
