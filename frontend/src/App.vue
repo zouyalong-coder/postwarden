@@ -20,8 +20,18 @@ const editingId = ref(null)
 const identityEditingId = ref(null)
 const tokenEditingId = ref(null)
 const issuedTokenSecret = ref('')
+const issuedTokenIdentityIds = ref([])
 const pluginEditingId = ref(null)
 const pluginConfigText = ref('')
+const tabs = [{ id: 'accounts', label: 'SMTP 账号' }, { id: 'tokens', label: 'API Token' }, { id: 'plugins', label: '插件' }, { id: 'history', label: '发送历史' }]
+const activeTab = ref('accounts')
+const configuredAccountId = ref(null)
+
+function moveTab(direction) {
+  const index = tabs.findIndex(tab => tab.id === activeTab.value)
+  activeTab.value = tabs[(index + direction + tabs.length) % tabs.length].id
+  document.getElementById(`tab-${activeTab.value}`)?.focus()
+}
 
 const emptyForm = () => ({ name: '', host: '', port: 587, tls_mode: 'starttls', auth_type: 'plain', username: '', credential: '', enabled: true })
 const form = reactive(emptyForm())
@@ -98,13 +108,18 @@ async function signOut() {
     messages.value = []
     messageDetail.value = null
     issuedTokenSecret.value = ''
+    issuedTokenIdentityIds.value = []
+    configuredAccountId.value = null
+    activeTab.value = 'accounts'
     cancelEdit()
+    cancelIdentityEdit()
   } catch (cause) { error.value = cause.message }
   finally { busy.value = false }
 }
 
 function edit(account) {
   clearNotice()
+  activeTab.value = 'accounts'
   editingId.value = account.id
   Object.assign(form, { name: account.name, host: account.host, port: account.port,
     tls_mode: account.tls_mode, auth_type: account.auth_type, username: account.username || '',
@@ -200,24 +215,48 @@ async function deleteAccount(account) {
   try {
     await api(`/smtp-accounts/${account.id}`, { method: 'DELETE' })
     if (editingId.value === account.id) cancelEdit()
+    if (configuredAccountId.value === account.id) {
+      configuredAccountId.value = null
+      cancelIdentityEdit()
+    }
     notice.value = '账号已删除。'
-    await loadAccounts()
+    await Promise.all([loadAccounts(), loadIdentities(), loadTokens()])
   } catch (cause) { error.value = cause.message }
   finally { busy.value = false }
 }
 
+function accountIdentities(account) {
+  return identities.value.filter(identity => identity.smtp_account_id === account.id)
+}
+function openAccountConfig(account) {
+  if (configuredAccountId.value === account.id) {
+    configuredAccountId.value = null
+    cancelIdentityEdit()
+  } else {
+    configuredAccountId.value = account.id
+    cancelIdentityEdit()
+    identityForm.smtp_account_id = account.id
+  }
+}
 function editIdentity(identity) {
   clearNotice()
+  configuredAccountId.value = identity.smtp_account_id
   identityEditingId.value = identity.id
   Object.assign(identityForm, { smtp_account_id: identity.smtp_account_id, display_name: identity.display_name,
-    email_address: identity.email_address, envelope_from: identity.envelope_from, enabled: identity.enabled })
-  document.getElementById('identity-form')?.scrollIntoView({ behavior: 'smooth' })
+    email_address: identity.email_address,
+    envelope_from: identity.envelope_from === identity.email_address ? '' : identity.envelope_from,
+    enabled: identity.enabled })
+  document.getElementById(`identity-form-${identity.smtp_account_id}`)?.scrollIntoView({ behavior: 'smooth' })
 }
-function cancelIdentityEdit() { identityEditingId.value = null; Object.assign(identityForm, emptyIdentityForm()) }
+function cancelIdentityEdit() {
+  identityEditingId.value = null
+  Object.assign(identityForm, emptyIdentityForm(), { smtp_account_id: configuredAccountId.value || '' })
+}
 async function saveIdentity() {
   clearNotice(); busy.value = true
   const body = { ...identityForm, display_name: identityForm.display_name.trim(),
-    email_address: identityForm.email_address.trim(), envelope_from: identityForm.envelope_from.trim() }
+    email_address: identityForm.email_address.trim(),
+    envelope_from: identityForm.envelope_from.trim() }
   try {
     if (identityEditingId.value) {
       await api(`/sender-identities/${identityEditingId.value}`, { method: 'PUT', body })
@@ -279,6 +318,7 @@ async function saveToken() {
     } else {
       const created = await api('/tokens', { method: 'POST', body })
       issuedTokenSecret.value = created.token_secret
+      issuedTokenIdentityIds.value = [...body.sender_identity_ids]
       notice.value = 'Token 已创建。请立即复制密钥。'
     }
     cancelTokenEdit()
@@ -299,6 +339,35 @@ async function setTokenStatus(token, action) {
 async function copyTokenSecret() {
   try { await navigator.clipboard.writeText(issuedTokenSecret.value); notice.value = 'Token 密钥已复制。' }
   catch { error.value = '无法访问剪贴板，请手动复制密钥。' }
+}
+function clearIssuedToken() {
+  issuedTokenSecret.value = ''
+  issuedTokenIdentityIds.value = []
+}
+function sendExample(token = '<API_TOKEN>', identityId = '<SENDER_IDENTITY_ID>') {
+  const payload = JSON.stringify({
+    sender_identity_id: identityId,
+    to: ['recipient@example.com'],
+    subject: '测试通知',
+    text: '这是一封测试邮件。',
+  }, null, 2)
+  return [
+    `curl -X POST '${window.location.origin}/api/v1/messages'`,
+    `  -H 'Authorization: Bearer ${token}'`,
+    "  -H 'Content-Type: application/json'",
+    "  -H 'Idempotency-Key: replace-with-unique-request-id'",
+    `  -d '${payload}'`,
+  ].join(' \\\n')
+}
+async function copySendExample() {
+  try { await navigator.clipboard.writeText(sendExample()); notice.value = '调用示例已复制。' }
+  catch { error.value = '无法访问剪贴板，请手动复制调用示例。' }
+}
+async function copyTokenHandoff() {
+  const identities = issuedTokenIdentityIds.value.join('、')
+  const handoff = `PostWarden API 调用信息\n服务地址：${window.location.origin}\nAPI Token：${issuedTokenSecret.value}\n允许的发件身份 ID：${identities}\n\n异步发送示例（替换收件人、内容和每次请求的幂等键）：\n${sendExample(issuedTokenSecret.value, issuedTokenIdentityIds.value[0])}\n\n发送成功受理后，使用返回的 status_url 查询最终状态。重试同一请求时沿用原 Idempotency-Key。`
+  try { await navigator.clipboard.writeText(handoff); notice.value = '调用信息已复制，可安全地交给调用者。' }
+  catch { error.value = '无法访问剪贴板，请手动复制密钥和调用示例。' }
 }
 
 function editPlugin(plugin) {
@@ -370,7 +439,7 @@ onMounted(loadSession)
     <section class="content">
       <p class="eyebrow">管理控制台</p>
       <h1>邮件发送管理</h1>
-      <p class="intro">管理 SMTP 通道、发件身份、访问 Token 和构建时插件。凭证和 Token 密钥不会保存在浏览器中。</p>
+      <p class="intro">管理 SMTP 账号、访问 Token、构建时插件和发送历史。发件身份在所属账号的配置中管理。</p>
       <div v-if="error" class="notice error" role="alert">{{ error }}</div>
       <div v-if="notice" class="notice success" role="status">{{ notice }}</div>
       <div v-if="loading" class="panel">正在连接服务…</div>
@@ -383,15 +452,35 @@ onMounted(loadSession)
       </form>
 
       <template v-else>
+        <nav class="admin-tabs" role="tablist" aria-label="管理分类">
+          <button v-for="tab in tabs" :id="`tab-${tab.id}`" :key="tab.id" type="button" role="tab" class="admin-tab" :class="{ active: activeTab === tab.id }" :aria-selected="activeTab === tab.id" :aria-controls="`panel-${tab.id}`" :tabindex="activeTab === tab.id ? 0 : -1" @click="activeTab = tab.id" @keydown.left.prevent="moveTab(-1)" @keydown.right.prevent="moveTab(1)">{{ tab.label }}</button>
+        </nav>
+        <div v-show="activeTab === 'accounts'" id="panel-accounts" class="tab-content" role="tabpanel" aria-labelledby="tab-accounts">
         <section class="panel" aria-labelledby="accounts-title">
           <div class="panel-heading split-heading"><div><h2 id="accounts-title">SMTP 账号</h2><p>页面不会回显已保存的密码。</p></div><span class="count">{{ accounts.length }} 个账号</span></div>
           <p v-if="accounts.length === 0" class="empty-state">还没有 SMTP 账号。使用下方表单添加第一个发送通道。</p>
-          <div v-for="account in accounts" :key="account.id" class="account-row">
-            <div><div class="account-name">{{ account.name }} <span :class="['badge', account.enabled ? 'enabled' : 'disabled']">{{ account.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">{{ account.host }}:{{ account.port }} · {{ account.tls_mode }} · {{ account.username || '无需认证' }}</div></div>
-            <div class="account-controls">
-              <div class="row-actions"><button class="text-button" :disabled="busy" @click="testConnection(account)">{{ testingAccountId === account.id ? '测试中…' : '测试连接' }}</button><button class="text-button" :disabled="busy" @click="edit(account)">编辑</button><button class="text-button" :disabled="busy" @click="toggleAccount(account)">{{ account.enabled ? '停用' : '启用' }}</button><button class="text-button danger" :disabled="busy" @click="deleteAccount(account)">删除</button></div>
-              <div v-if="testForm(account).result" class="test-result" :class="testForm(account).result.success ? 'test-success' : 'test-failure'" role="status"><strong>{{ testResultTitle(testForm(account).result) }}</strong><p v-if="testResultGuidance(testForm(account).result)">{{ testResultGuidance(testForm(account).result) }}</p></div>
-              <details class="test-message"><summary>发送测试邮件</summary><div class="test-message-form"><label>发件地址<input v-model="testForm(account).from" type="email" required placeholder="mailer@example.com" /><small>填写此 SMTP 账号获准发送的邮箱地址。飞书等服务通常要求与 SMTP 用户名对应。</small></label><label>收件地址<input v-model="testForm(account).to" type="email" required placeholder="you@example.com" /><small>填写要接收测试邮件的完整邮箱地址。</small></label><button class="primary-button" type="button" :disabled="busy || !testForm(account).from || !testForm(account).to" @click="sendTestMessage(account)">{{ testingAccountId === account.id ? '发送中…' : '发送固定测试邮件' }}</button><p class="helper-text">测试成功只表示 SMTP 服务商接受了邮件，不代表目标邮箱已收到。请检查垃圾箱、隔离区和退信。</p></div></details>
+          <div v-for="account in accounts" :key="account.id" class="account-item">
+            <div class="account-row">
+              <div><div class="account-name">{{ account.name }} <span :class="['badge', account.enabled ? 'enabled' : 'disabled']">{{ account.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">{{ account.host }}:{{ account.port }} · {{ account.tls_mode }} · {{ account.username || '无需认证' }} · {{ accountIdentities(account).filter(item => !item.deleted_at).length }} 个发件身份</div></div>
+              <div class="row-actions"><button class="text-button" type="button" :aria-expanded="configuredAccountId === account.id" :aria-controls="`account-config-${account.id}`" @click="openAccountConfig(account)">{{ configuredAccountId === account.id ? '收起配置' : '管理配置' }}</button><button class="text-button" :disabled="busy" @click="edit(account)">编辑连接</button><button class="text-button" :disabled="busy" @click="toggleAccount(account)">{{ account.enabled ? '停用' : '启用' }}</button><button class="text-button danger" :disabled="busy" @click="deleteAccount(account)">删除</button></div>
+            </div>
+            <div v-show="configuredAccountId === account.id" :id="`account-config-${account.id}`" class="account-config">
+              <div class="subsection-heading"><div><h3>发件身份</h3><p>这些身份只使用「{{ account.name }}」发送。Token 只能选择已启用账号下的已启用身份。</p></div><span class="count">{{ accountIdentities(account).filter(item => !item.deleted_at).length }} 个</span></div>
+              <p v-if="accountIdentities(account).length === 0" class="empty-state">此账号还没有发件身份。</p>
+              <div v-for="identity in accountIdentities(account)" :key="identity.id" class="account-row identity-row" :class="{ 'muted-row': identity.deleted_at }">
+                <div><div class="account-name">{{ identity.display_name }} &lt;{{ identity.email_address }}&gt; <span :class="['badge', identity.deleted_at ? 'disabled' : identity.enabled ? 'enabled' : 'disabled']">{{ identity.deleted_at ? '已删除' : identity.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">Envelope From: {{ identity.envelope_from }} · 版本 {{ identity.version }}</div></div>
+                <div v-if="!identity.deleted_at" class="row-actions"><button class="text-button" :disabled="busy" @click="editIdentity(identity)">编辑</button><button class="text-button" :disabled="busy" @click="toggleIdentity(identity)">{{ identity.enabled ? '停用' : '启用' }}</button><button class="text-button danger" :disabled="busy" @click="deleteIdentity(identity)">删除</button></div>
+              </div>
+              <form :id="`identity-form-${account.id}`" class="nested-form" @submit.prevent="saveIdentity">
+                <div class="subsection-heading"><div><h3>{{ identityEditingId ? '编辑发件身份' : '添加发件身份' }}</h3><p>绑定到「{{ account.name }}」。邮箱地址和信封发件地址只接受单个邮箱格式。</p></div><button v-if="identityEditingId" class="text-button" type="button" @click="cancelIdentityEdit">取消编辑</button></div>
+                <div class="form-grid"><label>显示名称<input v-model="identityForm.display_name" maxlength="191" required placeholder="例如：PostWarden 通知" /></label><label>发件邮箱<input v-model="identityForm.email_address" type="email" maxlength="320" required placeholder="mailer@example.com" /></label><label>Envelope From（退信地址，可选）<input v-model="identityForm.envelope_from" type="email" maxlength="320" placeholder="留空则使用发件邮箱" /><small>留空时后台使用发件邮箱作为退信地址；需要单独接收退信时可填写其他获准使用的邮箱地址。</small></label></div>
+                <label class="checkbox"><input v-model="identityForm.enabled" type="checkbox" /> 启用此身份</label>
+                <div class="form-actions"><button class="primary-button" :disabled="busy || !account.enabled" type="submit">{{ busy ? '保存中…' : identityEditingId ? '保存身份' : '创建身份' }}</button><span v-if="!account.enabled" class="helper-text">先启用账号，再添加或编辑发件身份。</span></div>
+              </form>
+              <div class="nested-form"><div class="subsection-heading"><div><h3>连接与发信测试</h3><p>先测试 SMTP 连接，再向指定地址发送固定内容的测试邮件。</p></div><button class="text-button" :disabled="busy" @click="testConnection(account)">{{ testingAccountId === account.id ? '测试中…' : '测试连接' }}</button></div>
+                <div v-if="testForm(account).result" class="test-result" :class="testForm(account).result.success ? 'test-success' : 'test-failure'" role="status"><strong>{{ testResultTitle(testForm(account).result) }}</strong><p v-if="testResultGuidance(testForm(account).result)">{{ testResultGuidance(testForm(account).result) }}</p></div>
+                <div class="test-message-form"><label>发件地址<input v-model="testForm(account).from" type="email" placeholder="mailer@example.com" /><small>填写此账号获准发送的邮箱地址。</small></label><label>收件地址<input v-model="testForm(account).to" type="email" placeholder="you@example.com" /><small>填写要接收测试邮件的完整邮箱地址。</small></label><button class="primary-button" type="button" :disabled="busy || !testForm(account).from || !testForm(account).to" @click="sendTestMessage(account)">{{ testingAccountId === account.id ? '发送中…' : '发送固定测试邮件' }}</button><p class="helper-text">SMTP 服务商接受邮件不代表目标邮箱已收到，请检查垃圾箱、隔离区和退信。</p></div>
+              </div>
             </div>
           </div>
         </section>
@@ -422,30 +511,23 @@ onMounted(loadSession)
           <div class="form-actions"><button class="primary-button" :disabled="busy" type="submit">{{ busy ? '保存中…' : editingId ? '保存更改' : '创建账号' }}</button></div>
         </form>
 
-        <section class="panel" aria-labelledby="identities-title">
-          <div class="panel-heading split-heading"><div><h2 id="identities-title">发件身份</h2><p>Token 只能使用已启用的身份；身份变更会更新版本。</p></div><span class="count">{{ identities.filter(item => !item.deleted_at).length }} 个有效身份</span></div>
-          <p v-if="identities.length === 0" class="empty-state">还没有发件身份。添加身份后才能创建 API Token。</p>
-          <div v-for="identity in identities" :key="identity.id" class="account-row" :class="{ 'muted-row': identity.deleted_at }">
-            <div><div class="account-name">{{ identity.display_name }} &lt;{{ identity.email_address }}&gt; <span :class="['badge', identity.deleted_at ? 'disabled' : identity.enabled ? 'enabled' : 'disabled']">{{ identity.deleted_at ? '已删除' : identity.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">Envelope From: {{ identity.envelope_from }} · SMTP: {{ accounts.find(account => account.id === identity.smtp_account_id)?.name || identity.smtp_account_id }} · 版本 {{ identity.version }}</div></div>
-            <div v-if="!identity.deleted_at" class="row-actions"><button class="text-button" :disabled="busy" @click="editIdentity(identity)">编辑</button><button class="text-button" :disabled="busy" @click="toggleIdentity(identity)">{{ identity.enabled ? '停用' : '启用' }}</button><button class="text-button danger" :disabled="busy" @click="deleteIdentity(identity)">删除</button></div>
-          </div>
-        </section>
-
-        <form id="identity-form" class="panel" @submit.prevent="saveIdentity">
-          <div class="panel-heading split-heading"><div><h2>{{ identityEditingId ? '编辑发件身份' : '添加发件身份' }}</h2><p>邮箱地址和信封发件地址只接受单个邮箱格式。</p></div><button v-if="identityEditingId" class="text-button" type="button" @click="cancelIdentityEdit">取消编辑</button></div>
-          <div class="form-grid">
-            <label>SMTP 账号<select v-model="identityForm.smtp_account_id" required><option value="" disabled>选择已启用账号</option><option v-for="account in accounts.filter(item => item.enabled)" :key="account.id" :value="account.id">{{ account.name }} · {{ account.host }}</option><option v-if="identityEditingId && accounts.some(item => item.id === identityForm.smtp_account_id && !item.enabled)" :value="identityForm.smtp_account_id" disabled>当前账号已停用</option></select></label>
-            <label>显示名称<input v-model="identityForm.display_name" maxlength="191" required placeholder="例如：PostWarden 通知" /></label>
-            <label>发件邮箱<input v-model="identityForm.email_address" type="email" maxlength="320" required placeholder="mailer@example.com" /></label>
-            <label>Envelope From<input v-model="identityForm.envelope_from" type="email" maxlength="320" required placeholder="bounces@example.com" /></label>
-          </div>
-          <label class="checkbox"><input v-model="identityForm.enabled" type="checkbox" /> 启用此身份</label>
-          <div class="form-actions"><button class="primary-button" :disabled="busy || !accounts.some(item => item.enabled)" type="submit">{{ busy ? '保存中…' : identityEditingId ? '保存身份' : '创建身份' }}</button></div>
-        </form>
-
+        </div>
+        <div v-show="activeTab === 'tokens'" id="panel-tokens" class="tab-content" role="tabpanel" aria-labelledby="tab-tokens">
         <section v-if="issuedTokenSecret" class="panel secret-panel" aria-live="polite">
           <div class="panel-heading"><h2>新 Token 密钥</h2><p>此密钥只显示这一次。请现在复制并妥善保存，离开此页面后无法再次查看。</p></div>
-          <div class="secret-value"><code>{{ issuedTokenSecret }}</code><div class="secret-actions"><button class="primary-button" type="button" @click="copyTokenSecret">复制密钥</button><button class="text-button" type="button" @click="issuedTokenSecret = ''">我已保存</button></div></div>
+          <div class="secret-value"><code>{{ issuedTokenSecret }}</code><div class="secret-actions"><button class="primary-button" type="button" @click="copyTokenHandoff">复制调用信息</button><button class="text-button" type="button" @click="copyTokenSecret">仅复制密钥</button><button class="text-button" type="button" @click="clearIssuedToken">我已保存</button></div></div>
+          <p class="handoff-note">调用信息包含密钥、服务地址、允许的发件身份 ID 和请求示例。请通过可信渠道交给调用者。</p>
+        </section>
+
+        <section class="panel" aria-labelledby="token-guide-title">
+          <div class="panel-heading split-heading"><div><h2 id="token-guide-title">如何使用 API Token</h2><p>调用者使用 HTTPS 请求发送接口；Token 放在 Authorization 请求头中。</p></div><button class="text-button" type="button" @click="copySendExample">复制示例</button></div>
+          <ol class="token-guide-steps">
+            <li>创建 Token 并授权至少一个发件身份，将创建时显示的调用信息交给调用者。</li>
+            <li>发送请求时填入 Token 和已授权的 <code>sender_identity_id</code>，为每次发送指定唯一的 <code>Idempotency-Key</code>。</li>
+            <li>异步接口返回 <code>202</code> 后，使用响应中的 <code>status_url</code> 查询最终状态。重试同一请求时沿用原幂等键。</li>
+          </ol>
+          <pre class="token-example"><code>{{ sendExample() }}</code></pre>
+          <p class="helper-text">示例中的 Token、身份 ID、收件人、内容和幂等键都需要替换。已有 Token 的密钥无法再次查看。</p>
         </section>
 
         <section class="panel" aria-labelledby="tokens-title">
@@ -468,6 +550,8 @@ onMounted(loadSession)
           <div class="form-actions"><button class="primary-button" :disabled="busy || tokenForm.sender_identity_ids.length === 0 || (!tokenEditingId && !!issuedTokenSecret)" type="submit">{{ busy ? '保存中…' : tokenEditingId ? '保存 Token 设置' : issuedTokenSecret ? '先保存上一个密钥' : '创建 Token' }}</button></div>
         </form>
 
+        </div>
+        <div v-show="activeTab === 'plugins'" id="panel-plugins" class="tab-content" role="tabpanel" aria-labelledby="tab-plugins">
         <section class="panel" aria-labelledby="plugins-title">
           <div class="panel-heading split-heading"><div><h2 id="plugins-title">构建时插件</h2><p>插件配置在服务端加密保存。这里不会回显配置内容。</p></div><span class="count">{{ plugins.length }} 个插件</span></div>
           <p v-if="plugins.length === 0" class="empty-state">当前构建没有注册插件。</p>
@@ -479,6 +563,8 @@ onMounted(loadSession)
           </div>
         </section>
 
+        </div>
+        <div v-show="activeTab === 'history'" id="panel-history" class="tab-content" role="tabpanel" aria-labelledby="tab-history">
         <section class="panel" aria-labelledby="history-title">
           <div class="panel-heading split-heading"><div><h2 id="history-title">发送历史</h2><p>仅显示状态和审计信息，不包含邮件正文、收件人或附件。</p></div><button class="text-button" :disabled="busy" @click="applyHistoryFilters">刷新记录</button></div>
           <div class="form-grid history-filters">
@@ -499,6 +585,7 @@ onMounted(loadSession)
             <h4>生命周期事件</h4><p v-if="messageDetail.events.length === 0" class="empty-state">暂无事件。</p><div v-for="event in messageDetail.events" :key="event.id" class="audit-row"><strong>{{ event.event_type }}</strong><span>{{ event.plugin_id || '系统' }}<template v-if="event.safe_details"> · {{ event.safe_details }}</template></span></div>
           </article>
         </section>
+        </div>
       </template>
       <footer>PostWarden <span>·</span> 自托管邮件发送代理</footer>
     </section>

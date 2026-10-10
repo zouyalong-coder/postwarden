@@ -28,7 +28,7 @@ pub struct CreateIdentity {
     pub smtp_account_id: String,
     pub display_name: String,
     pub email_address: String,
-    pub envelope_from: String,
+    pub envelope_from: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -220,6 +220,20 @@ fn validate(display_name: &str, email: &str, envelope: &str) -> ApiResult<()> {
     Ok(())
 }
 
+// A blank envelope sender means the visible sender address should receive
+// delivery failure notices too. On update, omission keeps the current value.
+fn resolved_envelope<'a>(
+    submitted: Option<&'a str>,
+    email: &'a str,
+    current: Option<&'a str>,
+) -> &'a str {
+    match submitted {
+        Some(value) if !value.trim().is_empty() => value.trim(),
+        Some(_) => email,
+        None => current.unwrap_or(email),
+    }
+}
+
 async fn require_active_account(db: &Database, id: &str) -> ApiResult<()> {
     let active = match db {
         Database::Sqlite(pool) => map_db(
@@ -283,7 +297,7 @@ async fn create(
 ) -> ApiResult<(StatusCode, Json<IdentityView>)> {
     let name = input.display_name.trim();
     let email = input.email_address.trim();
-    let envelope = input.envelope_from.trim();
+    let envelope = resolved_envelope(input.envelope_from.as_deref(), email, None);
     validate(name, email, envelope)?;
     require_active_account(&state.database, &input.smtp_account_id).await?;
     let id = Uuid::new_v4().to_string();
@@ -333,11 +347,11 @@ async fn update(
         .as_deref()
         .unwrap_or(&current.email_address)
         .trim();
-    let envelope = input
-        .envelope_from
-        .as_deref()
-        .unwrap_or(&current.envelope_from)
-        .trim();
+    let envelope = resolved_envelope(
+        input.envelope_from.as_deref(),
+        email,
+        Some(&current.envelope_from),
+    );
     validate(name, email, envelope)?;
     require_active_account(&state.database, account).await?;
     let changed = account != current.smtp_account_id
@@ -431,7 +445,7 @@ async fn set_enabled(db: &Database, id: &str, enabled: bool) -> ApiResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_address, validate};
+    use super::{resolved_envelope, valid_address, validate, CreateIdentity};
 
     #[test]
     fn address_validation_blocks_header_injection() {
@@ -445,5 +459,36 @@ mod tests {
         }
         assert!(valid_address("sender+tag@example.com"));
         assert!(validate("Example Sender", "sender@example.com", "bounce@example.com").is_ok());
+    }
+
+    #[test]
+    fn blank_envelope_uses_sender_and_omitted_update_keeps_existing() {
+        let input: CreateIdentity = serde_json::from_value(serde_json::json!({
+            "smtp_account_id": "account-id",
+            "display_name": "Test",
+            "email_address": "new@example.com"
+        }))
+        .unwrap();
+        assert!(input.envelope_from.is_none());
+        assert_eq!(
+            resolved_envelope(None, "new@example.com", None),
+            "new@example.com"
+        );
+        assert_eq!(
+            resolved_envelope(Some("  "), "new@example.com", None),
+            "new@example.com"
+        );
+        assert_eq!(
+            resolved_envelope(Some(""), "new@example.com", Some("old@example.com")),
+            "new@example.com"
+        );
+        assert_eq!(
+            resolved_envelope(None, "new@example.com", Some("old@example.com")),
+            "old@example.com"
+        );
+        assert_eq!(
+            resolved_envelope(Some(" bounce@example.com "), "new@example.com", None),
+            "bounce@example.com"
+        );
     }
 }

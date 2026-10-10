@@ -40,6 +40,25 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .notice { margin-bottom: 18px; padding: 12px 16px; border-radius: 8px; font-size: 13px; }
 .notice.error { color: #8b2e27; background: #fcebe8; }
 .notice.success { color: #315d40; background: #e8f3e9; }
+.admin-tabs { display: flex; gap: 4px; margin-bottom: 22px; padding: 5px; border: 1px solid #e0e4dc; border-radius: 12px; background: #edf0eb; overflow-x: auto; }
+.admin-tab { flex: 1; min-width: max-content; padding: 11px 18px; border: 0; border-radius: 8px; background: transparent; color: #687468; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.admin-tab:hover { color: #345c45; background: #e4ebe2; }
+.admin-tab.active { color: #234a32; background: #fff; box-shadow: 0 1px 5px #213d251a; }
+.admin-tab:focus-visible { outline: 2px solid #477758; outline-offset: -2px; }
+.tab-content > .panel + .panel { margin-top: 22px; }
+.account-item { border-top: 1px solid #e6eae3; }
+.account-item > .account-row { border-top: 0; }
+.account-config { margin: 0 0 18px; padding: 20px; border: 1px solid #dce6d9; border-radius: 10px; background: #f5f8f3; }
+.subsection-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.subsection-heading h3 { margin: 0 0 5px; font-size: 16px; }
+.subsection-heading p { margin: 0; color: #758075; font-size: 12px; line-height: 1.6; }
+.identity-row { padding: 13px 0; }
+.identity-row .account-name { font-size: 13px; }
+.nested-form { margin-top: 22px; padding-top: 22px; border-top: 1px solid #dce6d9; }
+.nested-form .form-grid { gap: 14px; }
+.nested-form .checkbox { margin-top: 16px; }
+.nested-form .form-actions { display: flex; align-items: center; gap: 15px; margin-top: 18px; }
+.helper-text { color: #758075; font-size: 11px; line-height: 1.5; }
 .account-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 0; border-top: 1px solid #e6eae3; }
 .account-name { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 600; }
 .account-details { margin-top: 6px; color: #69756a; font-size: 13px; overflow-wrap: anywhere; }
@@ -53,7 +72,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .secret-panel { border-color: #c9ddca; background: #f1f7ef; }
 .secret-value { display: flex; align-items: center; gap: 16px; }
 .secret-value code { flex: 1; padding: 12px; border: 1px solid #d5e2d3; border-radius: 8px; background: #fff; color: #253d2c; overflow-wrap: anywhere; user-select: all; }
-.secret-actions { display: flex; align-items: center; gap: 16px; white-space: nowrap; }
+.secret-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.handoff-note { margin: 12px 0 0; color: #617261; font-size: 12px; line-height: 1.6; }
+.token-guide-steps { margin: 0 0 18px; padding-left: 22px; color: #47574a; font-size: 13px; line-height: 1.8; }
+.token-guide-steps li + li { margin-top: 6px; }
+.token-example { margin: 0 0 12px; padding: 16px; border: 1px solid #dce6d9; border-radius: 8px; background: #f3f7f1; overflow-x: auto; }
+.token-example code { line-height: 1.6; white-space: pre; }
 .account-controls { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
 .test-message { width: min(100%, 460px); color: #345c45; font-size: 13px; }
 .test-message summary { cursor: pointer; text-align: right; font-weight: 600; }
