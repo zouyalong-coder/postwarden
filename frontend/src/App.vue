@@ -114,6 +114,11 @@ function edit(account) {
 
 function cancelEdit() { editingId.value = null; Object.assign(form, emptyForm()) }
 
+function adjustPortForTlsMode() {
+  if (form.tls_mode === 'implicit' && Number(form.port) === 587) form.port = 465
+  if (form.tls_mode === 'starttls' && Number(form.port) === 465) form.port = 587
+}
+
 async function saveAccount() {
   clearNotice(); busy.value = true
   const body = { name: form.name.trim(), host: form.host.trim(), port: Number(form.port),
@@ -153,6 +158,22 @@ function ensureTestForm(account) {
   }
 }
 function testForm(account) { return testForms[account.id] }
+function testResultTitle(result) {
+  if (result.outcome === 'accepted') return 'SMTP 服务器已接收这封邮件'
+  if (result.outcome === 'outcome_unknown') return '发送结果不确定'
+  if (result.outcome === 'transient_rejection' || result.outcome === 'permanent_rejection') return 'SMTP 服务器拒绝了这封邮件'
+  if (result.outcome === 'connected') return 'SMTP 连接成功'
+  if (result.outcome === 'connection_failed') return '无法连接 SMTP 服务器'
+  return result.message
+}
+function testResultGuidance(result) {
+  if (result.outcome === 'accepted') return '这表示邮件已提交给 SMTP 服务商，不代表目标邮箱已收到。请核对完整收件地址，检查垃圾箱/隔离区和发件邮箱的已发送/退信文件夹，稍候再查。'
+  if (result.outcome === 'outcome_unknown') return '连接中断时服务端可能已经接收邮件。请先检查发件邮箱的已发送/退信文件夹和目标邮箱，再决定是否重试，以免重复发送。'
+  if (result.outcome === 'transient_rejection' || result.outcome === 'permanent_rejection') return '请核对发件地址是否获准通过此 SMTP 账号发送、账号认证信息及服务商发送限额；也可查看服务商的邮件日志或退信说明。'
+  if (result.outcome === 'connected') return '这里只确认可以连接 SMTP 服务；它不验证收件地址，也不代表邮件已发送或投递。'
+  if (result.outcome === 'connection_failed') return '请核对主机地址、端口和 TLS 方式是否匹配（常见组合为隐式 TLS + 465 或 STARTTLS + 587），并确认本机网络可访问该服务器。'
+  return ''
+}
 async function testConnection(account) {
   clearNotice(); busy.value = true; testingAccountId.value = account.id
   const result = testForms[account.id]
@@ -369,22 +390,33 @@ onMounted(loadSession)
             <div><div class="account-name">{{ account.name }} <span :class="['badge', account.enabled ? 'enabled' : 'disabled']">{{ account.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">{{ account.host }}:{{ account.port }} · {{ account.tls_mode }} · {{ account.username || '无需认证' }}</div></div>
             <div class="account-controls">
               <div class="row-actions"><button class="text-button" :disabled="busy" @click="testConnection(account)">{{ testingAccountId === account.id ? '测试中…' : '测试连接' }}</button><button class="text-button" :disabled="busy" @click="edit(account)">编辑</button><button class="text-button" :disabled="busy" @click="toggleAccount(account)">{{ account.enabled ? '停用' : '启用' }}</button><button class="text-button danger" :disabled="busy" @click="deleteAccount(account)">删除</button></div>
-              <div v-if="testForm(account).result" class="test-result" :class="testForm(account).result.success ? 'test-success' : 'test-failure'">{{ testForm(account).result.message }}</div>
-              <details class="test-message"><summary>发送测试邮件</summary><div class="test-message-form"><label>发件地址<input v-model="testForm(account).from" type="email" required placeholder="mailer@example.com" /></label><label>收件地址<input v-model="testForm(account).to" type="email" required placeholder="you@example.com" /></label><button class="primary-button" type="button" :disabled="busy || !testForm(account).from || !testForm(account).to" @click="sendTestMessage(account)">{{ testingAccountId === account.id ? '发送中…' : '发送固定测试邮件' }}</button><p class="helper-text">将发送固定内容的测试邮件，收件人会收到实际邮件。</p></div></details>
+              <div v-if="testForm(account).result" class="test-result" :class="testForm(account).result.success ? 'test-success' : 'test-failure'" role="status"><strong>{{ testResultTitle(testForm(account).result) }}</strong><p v-if="testResultGuidance(testForm(account).result)">{{ testResultGuidance(testForm(account).result) }}</p></div>
+              <details class="test-message"><summary>发送测试邮件</summary><div class="test-message-form"><label>发件地址<input v-model="testForm(account).from" type="email" required placeholder="mailer@example.com" /><small>填写此 SMTP 账号获准发送的邮箱地址。飞书等服务通常要求与 SMTP 用户名对应。</small></label><label>收件地址<input v-model="testForm(account).to" type="email" required placeholder="you@example.com" /><small>填写要接收测试邮件的完整邮箱地址。</small></label><button class="primary-button" type="button" :disabled="busy || !testForm(account).from || !testForm(account).to" @click="sendTestMessage(account)">{{ testingAccountId === account.id ? '发送中…' : '发送固定测试邮件' }}</button><p class="helper-text">测试成功只表示 SMTP 服务商接受了邮件，不代表目标邮箱已收到。请检查垃圾箱、隔离区和退信。</p></div></details>
             </div>
           </div>
         </section>
 
         <form id="account-form" class="panel" @submit.prevent="saveAccount">
-          <div class="panel-heading split-heading"><div><h2>{{ editingId ? '编辑 SMTP 账号' : '添加 SMTP 账号' }}</h2><p>{{ editingId ? '留空密码会保留当前凭证。' : '填写服务器和认证信息。' }}</p></div><button v-if="editingId" class="text-button" type="button" @click="cancelEdit">取消编辑</button></div>
+          <div class="panel-heading split-heading"><div><h2>{{ editingId ? '编辑 SMTP 账号' : '添加 SMTP 账号' }}</h2><p>{{ editingId ? '留空密码会保留当前凭证。' : '填写服务器和认证信息。配置示例：飞书邮箱使用 smtp.feishu.cn、端口 465、隐式 TLS。' }}</p></div><button v-if="editingId" class="text-button" type="button" @click="cancelEdit">取消编辑</button></div>
+          <div class="smtp-setup-guide">
+            <strong>这些字段怎么填</strong>
+            <ul>
+              <li><b>隐式 TLS</b>：连接一开始就加密，也叫 SSL/TLS，通常配端口 <code>465</code>。例如飞书 SMTP：<code>smtp.feishu.cn</code> + <code>465</code> + 隐式 TLS。</li>
+              <li><b>STARTTLS</b>：先建立 SMTP 连接，再升级为加密连接，通常配端口 <code>587</code>。端口和加密方式必须按服务商要求配对。</li>
+              <li><b>认证方式</b>：PLAIN 和 LOGIN 是两种用户名/密码认证机制，不表示是否加密；启用 TLS 后认证信息通过加密连接发送。飞书可先试 LOGIN，若服务端提示不支持该机制再试 PLAIN。</li>
+              <li><b>用户名</b>：通常填写完整邮箱地址，例如 <code>name@example.com</code>。</li>
+              <li><b>密码</b>：填写邮箱服务商提供的 SMTP/客户端专用密码；飞书应填「IMAP/SMTP 密码」，不是网页登录密码。编辑时留空表示保留原密码。</li>
+              <li>本服务只通过 SMTP 发信，不读取邮箱；无需配置 IMAP 地址或端口。</li>
+            </ul>
+          </div>
           <div class="form-grid">
             <label>账号名称<input v-model="form.name" maxlength="191" required placeholder="例如：事务邮件" /></label>
-            <label>SMTP 主机<input v-model="form.host" maxlength="255" required placeholder="smtp.example.com" /></label>
-            <label>端口<input v-model.number="form.port" type="number" min="1" max="65535" required /></label>
-            <label>加密方式<select v-model="form.tls_mode"><option value="starttls">STARTTLS</option><option value="implicit">隐式 TLS</option><option value="none">无 TLS（仅免认证）</option></select></label>
-            <label>认证方式<select v-model="form.auth_type"><option value="plain">PLAIN</option><option value="login">LOGIN</option><option value="none">无需认证</option></select></label>
-            <label v-if="form.auth_type !== 'none'">用户名<input v-model="form.username" autocomplete="off" :required="!editingId" /></label>
-            <label v-if="form.auth_type !== 'none'" class="wide">密码<input v-model="form.credential" type="password" autocomplete="new-password" :required="!editingId" /></label>
+            <label>SMTP 主机<input v-model="form.host" maxlength="255" required placeholder="smtp.example.com" /><small>填写服务商提供的 SMTP 服务器地址，例如飞书邮箱为 smtp.feishu.cn。</small></label>
+            <label>端口<input v-model.number="form.port" type="number" min="1" max="65535" required /><small>端口必须与加密方式对应：隐式 TLS 常用 465，STARTTLS 常用 587；以服务商说明为准。</small></label>
+            <label>加密方式<select v-model="form.tls_mode" @change="adjustPortForTlsMode"><option value="starttls">STARTTLS（通常端口 587）</option><option value="implicit">隐式 TLS（通常端口 465）</option><option value="none">无 TLS（仅免认证）</option></select><small v-if="form.tls_mode === 'implicit'">连接后立即加密；飞书请使用 465。若端口原为 587，已自动改为 465。</small><small v-else-if="form.tls_mode === 'starttls'">连接建立后再升级为加密；飞书请使用 587。若端口原为 465，已自动改为 587。</small><small v-else>仅适用于明确允许免认证且无需加密的 SMTP 服务。</small></label>
+            <label>认证方式<select v-model="form.auth_type"><option value="plain">PLAIN（用户名和密码）</option><option value="login">LOGIN（用户名和密码）</option><option value="none">无需认证</option></select><small>PLAIN/LOGIN 是认证协议名称，不是加密开关；按服务商支持的方式选择。大多数邮箱要求认证。</small></label>
+            <label v-if="form.auth_type !== 'none'">用户名<input v-model="form.username" autocomplete="off" :required="!editingId" placeholder="name@example.com" /><small>通常填写完整邮箱地址，而不是只填 @ 前面的名称。</small></label>
+            <label v-if="form.auth_type !== 'none'" class="wide">SMTP 密码<input v-model="form.credential" type="password" autocomplete="new-password" :required="!editingId" /><small>填写服务商提供的 SMTP/客户端专用密码。若服务商要求授权码，请填授权码；不要在此处填写 IMAP 服务器信息。</small></label>
           </div>
           <label class="checkbox"><input v-model="form.enabled" type="checkbox" /> 启用此账号</label>
           <div class="form-actions"><button class="primary-button" :disabled="busy" type="submit">{{ busy ? '保存中…' : editingId ? '保存更改' : '创建账号' }}</button></div>

@@ -21,6 +21,14 @@ PostWarden 是自托管的 SMTP 发送代理和授权中心。调用方使用 Po
 
 启动脚本在本地和镜像中相同：容器默认执行 `postwarden-launcher start`；初始化时执行 `postwarden-launcher init admin`。两种方式都由 Rust 服务运行迁移并启动同进程 Worker。
 
+## SMTP 账号与测试邮件
+
+在管理页面的「SMTP 账号」中填写发信服务器，而非 IMAP 收信服务器。端口与加密方式需要配套：465 通常选择「隐式 TLS」（连接建立时立即加密，也称 SSL/TLS），587 通常选择「STARTTLS」（连接后升级为加密）；以邮箱服务商提供的配置为准。「PLAIN」和「LOGIN」是 SMTP 账号认证方式，不代表连接是否加密。用户名通常是完整邮箱地址，密码通常是邮箱服务商生成的客户端专用密码或授权码。保存凭证后，页面不会回显密码。
+
+飞书邮箱可先使用 `smtp.feishu.cn`、465、「隐式 TLS」、完整邮箱地址和页面显示的 IMAP/SMTP 密码；认证方式先试「LOGIN」，若服务端提示认证机制不支持，再试「PLAIN」。也可以使用 587 与「STARTTLS」。发送测试邮件时，发件地址应使用该账号获准发送的地址。
+
+「测试连接」只验证 SMTP 连接；「发送测试邮件」显示“SMTP 服务器已接收”时，仅表示发信服务器接受了提交，**不代表目标邮箱已经投递**。若收件箱没有邮件，请确认收件地址完整且无拼写错误，搜索主题 `PostWarden SMTP test`，检查垃圾箱和企业隔离区，并查看发件邮箱的已发送邮件与退信通知。若仍未找到，使用邮箱服务商的投递日志或联系其管理员按发件人、收件人和测试时间查询。不要反复点击发送，以免产生重复邮件。
+
 ## Docker 与 HTTPS
 
 提供 [SQLite Compose 示例](deploy/compose.sqlite.yml) 和 [MySQL Compose 示例](deploy/compose.mysql.yml)。两者使用 Caddy 提供 HTTPS；请将域名解析到部署主机，并设置持久保存的 `POSTWARDEN_MASTER_KEY`、`POSTWARDEN_DOMAIN`，MySQL 模式还要设置数据库密码。以 SQLite 为例（主密钥只生成一次并妥善保存）：

@@ -61,6 +61,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .test-message-form .primary-button, .test-message-form .helper-text { grid-column: 1 / -1; }
 .test-message-form .helper-text { margin: 0; color: #758075; font-size: 11px; line-height: 1.5; }
 .test-result { max-width: 460px; padding: 8px 11px; border-radius: 7px; font-size: 12px; }
+.test-result p { margin: 5px 0 0; line-height: 1.6; }
 .test-success { color: #315d40; background: #e8f3e9; }
 .test-failure { color: #8b2e27; background: #fcebe8; }
 .history-filters { align-items: end; margin-bottom: 18px; }
@@ -87,6 +88,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .row-actions { display: flex; gap: 16px; white-space: nowrap; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .form-grid .wide { grid-column: 1 / -1; }
+.smtp-setup-guide { margin: -6px 0 22px; padding: 16px 18px; border: 1px solid #dce6d9; border-radius: 9px; background: #f1f6ef; color: #47574a; font-size: 12px; line-height: 1.75; }
+.smtp-setup-guide strong { color: #345c45; font-size: 13px; }
+.smtp-setup-guide ul { margin: 8px 0 0; padding-left: 20px; }
+.smtp-setup-guide li + li { margin-top: 4px; }
+.smtp-setup-guide code { padding: 1px 4px; border-radius: 4px; background: #e4ece1; }
 .checkbox { margin-top: 22px; flex-direction: row; align-items: center; font-weight: 400; }
 .checkbox input { accent-color: #345c45; }
 .form-actions { margin-top: 24px; }
