@@ -14,12 +14,14 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| `sender_identity_id` | 必填；必须在当前 Token 的显式授权范围内 |
-| `to` | 必填，至少一个收件地址 |
+| `sender_identity_id` | 普通发送必填；插件发送可留空，由插件填写；最终身份必须在当前 Token 的显式授权范围内 |
+| `to` | 普通发送必填，至少一个收件地址；插件发送可留空，由插件填写 |
 | `cc`, `bcc` | 可选；密送地址只进入 SMTP 信封，不写入对外邮件头 |
-| `subject` | 必填；禁止换行注入邮件头 |
-| `text`, `html` | 至少提供一个；同时提供时构造文本与 HTML 替代正文 |
+| `subject` | 普通发送必填；插件发送可留空，由插件填写；禁止换行注入邮件头 |
+| `text`, `html` | 普通发送至少提供一个；插件发送可留空，由插件填写；同时提供时构造文本与 HTML 替代正文 |
 | `attachments` | 可选二进制文件；限制单件、总量和请求总大小；不接受任意远程 URL 作为附件来源 |
+| `plugin_id` | 可选；指定负责邮件成形的已启用插件 |
+| `plugin_input` | 使用 `plugin_id` 时提供的 JSON 对象，由指定插件自行解析；无 `plugin_id` 时不可提供 |
 
 无附件请求可用 `application/json`；含附件请求使用 `multipart/form-data`，其中 `message` 为上述 JSON 字段，其余为附件文件。正式 OpenAPI 会精确定义数组编码、文件字段及上限。调用方不得提供 SMTP 主机、用户名、密码、任意 `From` 或任意邮件头。
 
@@ -27,25 +29,27 @@
 
 ## 模板插件
 
-模板发送仍使用 `POST /api/v1/messages`（异步）或 `POST /api/v1/messages/send`（同步）。请求中的 `template` 指定构建期插件及其输入；其他邮件字段可省略，由插件在邮件成形阶段填写或替换：
+模板发送仍使用 `POST /api/v1/messages`（异步）或 `POST /api/v1/messages/send`（同步）。普通发送和插件发送共用顶层邮件字段；插件发送额外提供 `plugin_id` 与 `plugin_input`。模板在邮件成形阶段填写或替换留空的邮件字段：
 
 ```json
 {
-  "template": {
-    "plugin_id": "mail-template",
-    "input": {
-      "scenario_id": "order.paid",
-      "variables": {"order_id": "A1001", "amount": "99.00"}
-    }
+  "sender_identity_id": "",
+  "to": [],
+  "subject": "",
+  "text": null,
+  "plugin_id": "mail-template",
+  "plugin_input": {
+    "scenario_id": "order.paid",
+    "variables": {"order_id": "A1001", "amount": "99.00"}
   }
 }
 ```
 
 `mail-template` 插件可替换发件身份、主题、文本/HTML 正文和 `to`、`cc`、`bcc` 地址。模板中的 `{{order_id}}` 等占位符从 `variables` 取值；变量缺失或类型不合适时拒绝请求。HTML 正文中的变量会转义。若模板启用 `allow_caller_recipients`，请求提供的地址会追加到固定地址；否则由模板地址取代请求地址。最终邮件必须至少有一个 To 地址。调用方仍需持有模板所选发件身份的 Token 授权。
 
-核心只按 `template.plugin_id` 找到已启用插件，并把 `template.input` 交给该插件的 `compose` 钩子。插件返回成形后的草稿，核心重新校验地址、内容和发件身份权限，再进入普通发送钩子与 SMTP 流程。插件可通过 `manage` 暴露受管理员会话和 CSRF 保护的管理资源；`mail-template` 的资源位于 `/api/v1/admin/plugins/mail-template/templates`。停用插件后，新模板请求会被拒绝，管理资源返回 `409 plugin_disabled`；重新启用后可继续管理已有模板。
+核心只按顶层 `plugin_id` 找到已启用插件，并把 `plugin_input` 交给该插件的 `compose` 钩子。插件返回成形后的草稿，核心重新校验地址、内容和发件身份权限，再进入普通发送钩子与 SMTP 流程。`plugin_id` 与 `plugin_input` 必须同时提供，且 `plugin_input` 必须是 JSON 对象。插件可通过 `manage` 暴露受管理员会话和 CSRF 保护的管理资源；`mail-template` 的资源位于 `/api/v1/admin/plugins/mail-template/templates`。停用插件后，新模板请求会被拒绝，管理资源返回 `409 plugin_disabled`；重新启用后可继续管理已有模板。
 
-模板请求的幂等比较基于插件 ID、插件输入、请求中的邮件字段及发送模式。同一个键重试时返回原消息，即使模板后来修改、删除或插件停用；更换键才会按当前配置重新成形。
+插件请求的幂等比较基于插件 ID、插件输入、请求中的邮件字段及发送模式。同一个键重试时返回原消息，即使模板后来修改、删除或插件停用；更换键才会按当前配置重新成形。
 
 ## 发送与查询接口
 

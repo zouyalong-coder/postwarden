@@ -72,7 +72,7 @@ MVP 提供可实际使用的构建期插件机制：公共插件接口 crate、�
 | 发送前 | 审核、策略检查、发送窗口 | 继续并可修改、拒绝、暂停 |
 | 结果产生后 | 通知、回调、外部审计 | 观察结果；失败仅记录，不篡改发送结果 |
 
-插件修改收件人、主题或内容后，核心重新进行格式、大小和策略校验；插件不能通过流程返回值绕过 Sender Identity 授权。核心负责加密保存配置和暂停状态，并向插件提供按 ID 隔离的加密 JSON KV 存储。插件可用 `default_config`、`config_template`、`validate_config` 定义默认配置、编辑示例和保存校验；`compose` 自行解析插件输入。插件可以通过 `manage` 在统一的管理员认证和 CSRF 防护下提供自己的资源；管理页面和可选的配置编辑器通过构建期组件注册表展示。后端插件实现放在 `src/plugins/<name>.rs`，由 `src/plugins/mod.rs` 注册；专用前端页面放在 `frontend/src/plugins/<Name>.vue`，由 `frontend/src/plugins/registry.js` 注册。增加第三方插件及其管理界面仍需重新构建服务与前端。内置 `mail-template` 插件验证了成形钩子、管理资源和启停流程；其现有关系型模板表仍由插件代码维护。
+插件修改收件人、主题或内容后，核心重新进行格式、大小和策略校验；插件不能通过流程返回值绕过 Sender Identity 授权。核心负责加密保存配置和暂停状态，并向插件提供按 ID 隔离的加密 JSON KV 存储。插件可用 `default_config`、`config_template`、`validate_config` 定义默认配置、编辑示例和保存校验；`compose` 自行解析插件输入。插件可以通过 `manage` 在统一的管理员认证和 CSRF 防护下提供自己的资源；宿主的 `PluginContainer.vue` 定义居中的插件工作区，也供插件在创建、编辑资源时打开第二层弹窗。邮件模板列表留在插件工作区，删除确认在列表内显示。后端插件实现放在 `src/plugins/<name>.rs`，由 `src/plugins/mod.rs` 注册；专用前端界面放在 `frontend/src/plugins/<Name>.vue`，由 `frontend/src/plugins/registry.js` 注册。增加第三方插件及其管理界面仍需重新构建服务与前端。内置 `mail-template` 插件验证了成形钩子、管理资源和启停流程；其现有关系型模板表仍由插件代码维护。
 
 插件代码按公共契约、宿主运行时和具体实现分层。`crates/postwarden-plugin-api` 定义插件 trait、上下文和钩子类型；`src/plugin_runtime/mod.rs` 管理插件生命周期、调用编排和管理路由，`src/plugin_runtime/storage.rs` 提供通用存储；`src/plugins/<name>.rs` 实现插件自身行为，`src/plugins/mod.rs` 只声明模块并完成构建期注册。维护现有插件只需修改对应的 `src/plugins/<name>.rs`；新增插件需要增加实现并在 `src/plugins/mod.rs` 注册，无需修改公共 trait 或宿主。只有宿主能力或公共契约变化时才改动 runtime 或 API crate。
 

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { hasPluginManagementPage, pluginDescriptor } from './plugins/registry.js'
+import PluginContainer from './plugin-runtime/PluginContainer.vue'
 
 const session = ref({ authenticated: false, login_name: null })
 const login = reactive({ login_name: '', password: '' })
@@ -33,9 +34,23 @@ function tabFromPath() {
 const activeTab = ref(tabFromPath())
 const pluginPageId = ref(window.location.pathname.match(/^\/plugins\/([^/]+)\/?$/)?.[1] || null)
 const pluginPage = computed(() => plugins.value.find(plugin => plugin.id === pluginPageId.value))
+const pluginEditing = computed(() => plugins.value.find(plugin => plugin.id === pluginEditingId.value))
+const callExamples = computed(() => [
+  { id: 'basic', label: '普通发送', description: '替换 Token、发件身份 ID、收件人、内容和每次请求的幂等键。已有 Token 的密钥无法再次查看。' },
+  ...plugins.value.filter(plugin => plugin.enabled).flatMap(plugin => {
+    const example = pluginDescriptor(plugin.id).callExample
+    return example ? [{ id: plugin.id, ...example }] : []
+  }),
+])
+const pluginContainerVisible = computed(() => Boolean(pluginPageId.value || pluginEditingId.value))
+const pluginContainerTitle = computed(() => {
+  if (pluginEditingId.value) return `${pluginEditing.value?.id || pluginEditingId.value} · 配置`
+  return pluginDescriptor(pluginPageId.value).managementTitle || `${pluginPage.value?.id || pluginPageId.value} · 管理`
+})
 const configuredAccountId = ref(null)
 
 function selectTab(id) {
+  cancelPluginEdit()
   activeTab.value = id
   pluginPageId.value = null
   const path = `/${id}`
@@ -47,12 +62,14 @@ function selectTab(id) {
 }
 
 function syncTabFromPath() {
+  cancelPluginEdit()
   activeTab.value = tabFromPath()
   pluginPageId.value = window.location.pathname.match(/^\/plugins\/([^/]+)\/?$/)?.[1] || null
 }
 
 function openPluginPage(plugin) {
   if (!plugin.enabled || !hasPluginManagementPage(plugin.id)) return
+  cancelPluginEdit()
   pluginPageId.value = plugin.id
   activeTab.value = 'plugins'
   window.history.pushState(null, '', `/plugins/${encodeURIComponent(plugin.id)}`)
@@ -377,28 +394,38 @@ function clearIssuedToken() {
   issuedTokenSecret.value = ''
   issuedTokenIdentityIds.value = []
 }
-function sendExample(token = '<API_TOKEN>', identityId = '<SENDER_IDENTITY_ID>') {
-  const payload = JSON.stringify({
+function sendExample(token = '<API_TOKEN>', identityId = '<SENDER_IDENTITY_ID>', exampleId = 'basic') {
+  const example = callExamples.value.find(item => item.id === exampleId) || callExamples.value[0]
+  const baseRequest = {
     sender_identity_id: identityId,
     to: ['recipient@example.com'],
     subject: '测试通知',
     text: '这是一封测试邮件。',
-  }, null, 2)
+  }
+  const request = example.id === 'basic' ? baseRequest : {
+    ...baseRequest,
+    ...example.fields,
+    plugin_id: example.id,
+    plugin_input: example.input,
+  }
+  const payload = JSON.stringify(request, null, 2)
+  const shellQuote = value => `'${String(value).replaceAll("'", "'\"'\"'")}'`
   return [
-    `curl -X POST '${window.location.origin}/api/v1/messages'`,
-    `  -H 'Authorization: Bearer ${token}'`,
+    `curl -X POST ${shellQuote(`${window.location.origin}/api/v1/messages`)}`,
+    `  -H ${shellQuote(`Authorization: Bearer ${token}`)}`,
     "  -H 'Content-Type: application/json'",
     "  -H 'Idempotency-Key: replace-with-unique-request-id'",
-    `  -d '${payload}'`,
+    `  -d ${shellQuote(payload)}`,
   ].join(' \\\n')
 }
-async function copySendExample() {
-  try { await navigator.clipboard.writeText(sendExample()); notice.value = '调用示例已复制。' }
+async function copySendExample(example) {
+  try { await navigator.clipboard.writeText(sendExample('<API_TOKEN>', '<SENDER_IDENTITY_ID>', example.id)); notice.value = `${example.label}示例已复制。` }
   catch { error.value = '无法访问剪贴板，请手动复制调用示例。' }
 }
 async function copyTokenHandoff() {
   const identities = issuedTokenIdentityIds.value.join('、')
-  const handoff = `PostWarden API 调用信息\n服务地址：${window.location.origin}\nAPI Token：${issuedTokenSecret.value}\n允许的发件身份 ID：${identities}\n\n异步发送示例（替换收件人、内容和每次请求的幂等键）：\n${sendExample(issuedTokenSecret.value, issuedTokenIdentityIds.value[0])}\n\n发送成功受理后，使用返回的 status_url 查询最终状态。重试同一请求时沿用原 Idempotency-Key。`
+  const examples = callExamples.value.map(example => `${example.label}示例：\n${sendExample(issuedTokenSecret.value, issuedTokenIdentityIds.value[0], example.id)}\n${example.description}`).join('\n\n')
+  const handoff = `PostWarden API 调用信息\n服务地址：${window.location.origin}\nAPI Token：${issuedTokenSecret.value}\n允许的发件身份 ID：${identities}\n\n${examples}\n\n发送成功受理后，使用返回的 status_url 查询最终状态。重试同一请求时沿用原 Idempotency-Key。`
   try { await navigator.clipboard.writeText(handoff); notice.value = '调用信息已复制，可安全地交给调用者。' }
   catch { error.value = '无法访问剪贴板，请手动复制密钥和调用示例。' }
 }
@@ -410,6 +437,18 @@ function editPlugin(plugin) {
   pluginConfigText.value = plugin.has_config ? '' : JSON.stringify(defaults, null, 2)
 }
 function cancelPluginEdit() { pluginEditingId.value = null; pluginConfigText.value = '' }
+function closePluginContainer() {
+  if (pluginEditingId.value) {
+    cancelPluginEdit()
+    clearNotice()
+  } else {
+    pluginPageId.value = null
+    activeTab.value = 'plugins'
+    const url = new URL(window.location.href)
+    url.pathname = '/plugins'
+    window.history.replaceState(null, '', url)
+  }
+}
 async function savePlugin(plugin) {
   try {
     const config = JSON.parse(pluginConfigText.value)
@@ -565,14 +604,17 @@ onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
         </section>
 
         <section class="panel" aria-labelledby="token-guide-title">
-          <div class="panel-heading split-heading"><div><h2 id="token-guide-title">如何使用 API Token</h2><p>调用者使用 HTTPS 请求发送接口；Token 放在 Authorization 请求头中。</p></div><button class="text-button" type="button" @click="copySendExample">复制示例</button></div>
+          <div class="panel-heading"><h2 id="token-guide-title">如何使用 API Token</h2><p>调用者使用 HTTPS 请求发送接口；Token 放在 Authorization 请求头中。</p></div>
           <ol class="token-guide-steps">
             <li>创建 Token 并授权至少一个发件身份，将创建时显示的调用信息交给调用者。</li>
-            <li>发送请求时填入 Token 和已授权的 <code>sender_identity_id</code>，为每次发送指定唯一的 <code>Idempotency-Key</code>。</li>
+            <li>普通发送填入已授权的 <code>sender_identity_id</code>；使用插件时提供顶层 <code>plugin_id</code> 和 <code>plugin_input</code>。每次发送都指定唯一的 <code>Idempotency-Key</code>。</li>
             <li>异步接口返回 <code>202</code> 后，使用响应中的 <code>status_url</code> 查询最终状态。重试同一请求时沿用原幂等键。</li>
           </ol>
-          <pre class="token-example"><code>{{ sendExample() }}</code></pre>
-          <p class="helper-text">示例中的 Token、身份 ID、收件人、内容和幂等键都需要替换。已有 Token 的密钥无法再次查看。</p>
+          <div v-for="example in callExamples" :key="example.id" class="call-example">
+            <div class="split-heading call-example-heading"><h3>{{ example.label }}</h3><button class="text-button" type="button" @click="copySendExample(example)">复制示例</button></div>
+            <pre class="token-example"><code>{{ sendExample('<API_TOKEN>', '<SENDER_IDENTITY_ID>', example.id) }}</code></pre>
+            <p class="helper-text">{{ example.description }}</p>
+          </div>
         </section>
 
         <section class="panel" aria-labelledby="tokens-title">
@@ -597,31 +639,32 @@ onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
 
         </div>
         <div v-show="activeTab === 'plugins'" id="panel-plugins" class="tab-content" role="tabpanel" aria-labelledby="tab-plugins">
-        <section v-if="!pluginPageId" class="panel" aria-labelledby="plugins-title">
+        <section class="panel" aria-labelledby="plugins-title">
           <div class="panel-heading split-heading"><div><h2 id="plugins-title">构建时插件</h2><p>插件配置在服务端加密保存。这里不会回显配置内容。</p></div><span class="count">{{ plugins.length }} 个插件</span></div>
           <p v-if="plugins.length === 0" class="empty-state">当前构建没有注册插件。</p>
           <div v-for="plugin in plugins" :key="plugin.id" class="plugin-entry">
           <div class="account-row plugin-row">
             <div class="token-summary"><div class="account-name">{{ plugin.id }} <span :class="['badge', plugin.enabled ? 'enabled' : 'disabled']">{{ plugin.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">版本 {{ plugin.version }} · 执行顺序 {{ plugin.execution_order }} · {{ plugin.has_config ? '已有加密配置' : '使用默认配置' }}</div>
-              <div v-if="pluginEditingId === plugin.id" class="plugin-editor">
-                <component v-if="pluginDescriptor(plugin.id).configComponent" :is="pluginDescriptor(plugin.id).configComponent" :plugin="plugin" :busy="busy" @save="savePluginConfig(plugin, $event)" @cancel="cancelPluginEdit" />
-                <template v-else><label>完整 JSON 配置<textarea v-model="pluginConfigText" rows="6" spellcheck="false" :placeholder="plugin.has_config ? '请输入完整的新配置 JSON 对象' : '{}'" required></textarea><small>出于安全原因，已有配置不会回显。保存时会用此 JSON 完整替换原配置。</small></label><div class="row-actions"><button class="primary-button" :disabled="busy || !pluginConfigText.trim()" @click="savePlugin(plugin)">保存设置</button><button class="text-button" :disabled="busy" @click="cancelPluginEdit">取消</button></div></template>
-              </div>
             </div>
-            <div v-if="pluginEditingId !== plugin.id" class="row-actions"><button v-if="hasPluginManagementPage(plugin.id)" class="text-button" :disabled="busy || !plugin.enabled" @click="openPluginPage(plugin)">管理</button><button class="text-button" :disabled="busy || !plugin.enabled" @click="editPlugin(plugin)">配置</button><button class="text-button" :disabled="busy" @click="togglePlugin(plugin)">{{ plugin.enabled ? '停用' : '启用' }}</button></div>
+            <div class="row-actions"><button v-if="hasPluginManagementPage(plugin.id)" class="text-button" :disabled="busy || !plugin.enabled" @click="openPluginPage(plugin)">管理</button><button class="text-button" :disabled="busy || !plugin.enabled" @click="editPlugin(plugin)">配置</button><button class="text-button" :disabled="busy" @click="togglePlugin(plugin)">{{ plugin.enabled ? '停用' : '启用' }}</button></div>
           </div>
           </div>
         </section>
-        <div v-else class="plugin-page">
-          <button class="text-button plugin-back" type="button" @click="selectTab('plugins')">← 返回插件列表</button>
-          <template v-if="pluginPage && pluginPage.enabled && hasPluginManagementPage(pluginPage.id)">
+
+        <PluginContainer :visible="session.authenticated && activeTab === 'plugins' && pluginContainerVisible" :title="pluginContainerTitle" @close="closePluginContainer">
+          <div v-if="pluginEditing" class="plugin-editor">
+            <p v-if="error" class="notice error" role="alert">{{ error }}</p>
+            <component v-if="pluginDescriptor(pluginEditing.id).configComponent" :is="pluginDescriptor(pluginEditing.id).configComponent" :plugin="pluginEditing" :busy="busy" @save="savePluginConfig(pluginEditing, $event)" @cancel="closePluginContainer" />
+            <template v-else><label>完整 JSON 配置<textarea v-model="pluginConfigText" rows="6" spellcheck="false" :placeholder="pluginEditing.has_config ? '请输入完整的新配置 JSON 对象' : '{}'" required></textarea><small>出于安全原因，已有配置不会回显。保存时会用此 JSON 完整替换原配置。</small></label><div class="row-actions"><button class="primary-button" :disabled="busy || !pluginConfigText.trim()" @click="savePlugin(pluginEditing)">保存设置</button><button class="text-button" :disabled="busy" @click="closePluginContainer">取消</button></div></template>
+          </div>
+          <template v-else-if="pluginPage && pluginPage.enabled && hasPluginManagementPage(pluginPage.id)">
             <component :is="pluginDescriptor(pluginPage.id).managementComponent" :plugin="pluginPage" :identities="identities" :accounts="accounts" />
           </template>
-          <section v-else class="panel" aria-label="插件管理不可用">
+          <section v-else-if="pluginPageId" class="panel" aria-label="插件管理不可用">
             <h2>{{ pluginPage?.id || pluginPageId }}</h2>
             <p class="helper-text">{{ pluginPage?.enabled === false ? '插件已停用，启用后才能管理。' : '此插件没有可用的管理页面。' }}</p>
           </section>
-        </div>
+        </PluginContainer>
 
         </div>
         <div v-show="activeTab === 'history'" id="panel-history" class="tab-content" role="tabpanel" aria-labelledby="tab-history">

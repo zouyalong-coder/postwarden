@@ -69,7 +69,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .plugin-editor { margin-top: 15px; max-width: 620px; }
 .plugin-editor small, .form-grid small { color: #758075; font-size: 11px; font-weight: 400; line-height: 1.5; }
 .plugin-editor .row-actions { margin-top: 12px; align-items: center; }
-.plugin-back { margin: 0 0 18px; }
 .secret-panel { border-color: #c9ddca; background: #f1f7ef; }
 .secret-value { display: flex; align-items: center; gap: 16px; }
 .secret-value code { flex: 1; padding: 12px; border: 1px solid #d5e2d3; border-radius: 8px; background: #fff; color: #253d2c; overflow-wrap: anywhere; user-select: all; }
@@ -77,6 +76,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .handoff-note { margin: 12px 0 0; color: #617261; font-size: 12px; line-height: 1.6; }
 .token-guide-steps { margin: 0 0 18px; padding-left: 22px; color: #47574a; font-size: 13px; line-height: 1.8; }
 .token-guide-steps li + li { margin-top: 6px; }
+.call-example + .call-example { margin-top: 24px; padding-top: 24px; border-top: 1px solid #e6eae3; }
+.call-example-heading { align-items: center; margin-bottom: 12px; }
+.call-example-heading h3 { margin: 0; font-size: 16px; }
 .token-example { margin: 0 0 12px; padding: 16px; border: 1px solid #dce6d9; border-radius: 8px; background: #f3f7f1; overflow-x: auto; }
 .token-example code { line-height: 1.6; white-space: pre; }
 .account-controls { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
@@ -123,5 +125,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .form-actions { margin-top: 24px; }
 footer { margin-top: 48px; color: #90978f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
 footer span { padding: 0 5px; }
+.plugin-dialog-backdrop { position: fixed; z-index: 1000; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; overflow: auto; padding: 28px; background: #17231ccc; }
+.plugin-dialog { display: flex; flex-direction: column; width: min(100%, 960px); min-width: 0; max-width: 100%; max-height: min(88vh, 900px); max-height: min(88dvh, 900px); min-height: 0; border: 1px solid #e0e4dc; border-radius: 14px; outline: none; background: #fafbf9; box-shadow: 0 20px 70px #10211640; }
+.plugin-dialog-nested { width: min(100%, 880px); }
+.plugin-dialog:focus-visible { box-shadow: 0 0 0 3px #47775855, 0 20px 70px #10211640; }
+.plugin-dialog-header { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 24px; border-bottom: 1px solid #e2e5df; }
+.plugin-dialog-header h2 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
+.plugin-dialog-close { display: grid; flex: none; width: 36px; height: 36px; place-items: center; border: 1px solid #dce2d9; border-radius: 8px; color: #47574a; background: #fff; font-size: 24px; line-height: 1; }
+.plugin-dialog-close:hover { color: #234a32; background: #edf3eb; }
+.plugin-dialog-content { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; }
+.plugin-dialog-content > :first-child { margin-top: 0; }
+.template-delete-confirm { margin: 0 0 16px; padding: 16px; border: 1px solid #e9cdc7; border-radius: 8px; background: #fff7f5; }
+.template-delete-confirm p { margin: 0 0 12px; }
 @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } .account-row { align-items: flex-start; flex-direction: column; gap: 10px; } .account-controls { width: 100%; align-items: flex-start; } .row-actions { gap: 20px; flex-wrap: wrap; } .test-message summary { text-align: left; } .test-message-form { grid-template-columns: 1fr; } .test-message-form .primary-button, .test-message-form .helper-text { grid-column: auto; } .secret-value { align-items: stretch; flex-direction: column; } .secret-actions { justify-content: space-between; } .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .audit-row { align-items: flex-start; flex-direction: column; gap: 5px; } .audit-row span { text-align: left; } }
 @media (max-width: 520px) { .topbar { padding-inline: 20px; } .environment { display: none; } .panel { padding: 20px; } .split-heading { flex-direction: column; gap: 10px; } }
+@media (max-width: 600px) { .plugin-dialog-backdrop { place-items: center; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); } .plugin-dialog { width: 100%; max-height: 100%; border-radius: 12px; } .plugin-dialog-header { padding: 14px 18px; } .plugin-dialog-content { padding: 18px; padding-bottom: max(18px, env(safe-area-inset-bottom)); } }

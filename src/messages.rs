@@ -50,11 +50,57 @@ struct SendRequest {
     #[serde(default)]
     attachments: Vec<JsonAttachment>,
     #[serde(default)]
-    template: Option<TemplateInvocation>,
+    plugin_id: Option<String>,
+    #[serde(default)]
+    plugin_input: OptionalPluginInput,
+}
+#[derive(Debug, Clone)]
+struct OptionalPluginInput {
+    present: bool,
+    value: Value,
+}
+impl Default for OptionalPluginInput {
+    fn default() -> Self {
+        Self {
+            present: false,
+            value: Value::Null,
+        }
+    }
+}
+impl<'de> Deserialize<'de> for OptionalPluginInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Value::deserialize(deserializer).map(|value| Self {
+            present: true,
+            value,
+        })
+    }
+}
+impl Serialize for OptionalPluginInput {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.value.serialize(serializer)
+    }
+}
+impl SendRequest {
+    fn plugin_invocation(&self) -> Result<Option<PluginInvocation>, ApiError> {
+        match (&self.plugin_id, self.plugin_input.present) {
+            (Some(plugin_id), true) => Ok(Some(PluginInvocation {
+                plugin_id: plugin_id.clone(),
+                input: self.plugin_input.value.clone(),
+            })),
+            (Some(_), false) | (None, true) => Err(bad()),
+            (None, false) => Ok(None),
+        }
+    }
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct TemplateInvocation {
+struct PluginInvocation {
     plugin_id: String,
     input: Value,
 }
@@ -310,8 +356,8 @@ async fn submit_request(
         )
     })?;
     let (input, attachments) = parse_body(&parts.headers, &raw)?;
-    let source = input
-        .template
+    let invocation = input.plugin_invocation()?;
+    let source = invocation
         .as_ref()
         .map(|_| serde_json::to_string(&(&input, &attachments)))
         .transpose()
@@ -324,11 +370,11 @@ async fn submit_request(
     }
     let id = format!("msg_{}", Uuid::new_v4().simple());
     let mut draft = make_draft(&input, &attachments, None)?;
-    if let Some(template) = &input.template {
-        validate_template_input(&input, &attachments)?;
+    if let Some(plugin) = &invocation {
+        validate_plugin_input(&input, plugin, &attachments)?;
         match state
             .plugins
-            .compose(&template.plugin_id, &id, &draft, &template.input)
+            .compose(&plugin.plugin_id, &id, &draft, &plugin.input)
             .await
         {
             Ok(FlowOutcome::Continue { draft: modified }) => draft = modified,
@@ -825,17 +871,18 @@ fn validate_request(r: &SendRequest, files: &[PluginAttachment]) -> Result<(), A
 fn valid_email(s: &str) -> bool {
     s.len() <= 320 && lettre::Address::from_str(s).is_ok()
 }
-fn validate_template_input(r: &SendRequest, files: &[PluginAttachment]) -> Result<(), ApiError> {
-    let Some(template) = &r.template else {
-        return Err(bad());
-    };
-    if template.plugin_id.is_empty()
-        || template.plugin_id.len() > 128
-        || !template
+fn validate_plugin_input(
+    r: &SendRequest,
+    plugin: &PluginInvocation,
+    files: &[PluginAttachment],
+) -> Result<(), ApiError> {
+    if plugin.plugin_id.is_empty()
+        || plugin.plugin_id.len() > 128
+        || !plugin
             .plugin_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        || !template.input.is_object()
+        || !plugin.input.is_object()
         || r.to.len() + r.cc.len() + r.bcc.len() > 100
         || r.to
             .iter()
@@ -894,7 +941,7 @@ fn request_digest(
     source: Option<&str>,
 ) -> Result<Vec<u8>, ApiError> {
     let bytes = match source {
-        Some(template_request) => serde_json::to_vec(&(mode, "template", template_request)),
+        Some(plugin_request) => serde_json::to_vec(&(mode, "plugin", plugin_request)),
         None => serde_json::to_vec(&(mode, draft)),
     }
     .map_err(|_| internal())?;
@@ -1780,6 +1827,7 @@ async fn fetch_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::{
         config::{Config, DatabaseKind, RetentionPolicy},
         database::Database,
@@ -1994,7 +2042,14 @@ mod tests {
             sqlx::query("INSERT INTO mail_templates(id,scenario_id,name,enabled,allow_caller_recipients,sender_identity_id,subject_template,text_template,html_template,to_json,cc_json,bcc_json,version,created_at,updated_at) VALUES('tpl_test','order.paid','Order paid',1,0,?,'Order {{order_id}}','Paid {{order_id}}',NULL,'[\"rcpt@example.org\"]','[]','[]',1,?,?)")
                 .bind(&identity).bind(&now).bind(&now).execute(pool).await.unwrap();
         }
-        let payload = json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}}});
+        let payload = json!({
+            "sender_identity_id":"",
+            "to":[],
+            "subject":"",
+            "text":null,
+            "plugin_id":"mail-template",
+            "plugin_input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}
+        });
         let response = call(
             &app,
             Method::POST,
@@ -2041,7 +2096,7 @@ mod tests {
             serde_json::from_slice(&to_bytes(duplicate.into_body(), MAX_REQUEST).await.unwrap())
                 .unwrap();
         assert_eq!(second["message_id"], id);
-        let extra_recipient = call(&app, Method::POST, "/api/v1/messages", &raw, Some("template-2"), Some(json!({"to":["extra@example.org"],"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1002"}}}}))).await;
+        let extra_recipient = call(&app, Method::POST, "/api/v1/messages", &raw, Some("template-2"), Some(json!({"to":["extra@example.org"],"plugin_id":"mail-template","plugin_input":{"scenario_id":"order.paid","variables":{"order_id":"A1002"}}}))).await;
         assert_eq!(extra_recipient.status(), StatusCode::ACCEPTED);
         let extra: Value = serde_json::from_slice(
             &to_bytes(extra_recipient.into_body(), MAX_REQUEST)
@@ -2059,13 +2114,53 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(extra_recorded.recipients.unwrap(), vec!["rcpt@example.org"]);
+        let old_envelope = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-old-envelope"),
+            Some(json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid"}}})),
+        )
+        .await;
+        assert_eq!(old_envelope.status(), StatusCode::BAD_REQUEST);
+        let input_without_plugin = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-no-plugin"),
+            Some(json!({"plugin_input":{"scenario_id":"order.paid"}})),
+        )
+        .await;
+        assert_eq!(input_without_plugin.status(), StatusCode::BAD_REQUEST);
+        let null_input_without_plugin = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-null-input"),
+            Some(json!({"plugin_input":null})),
+        )
+        .await;
+        assert_eq!(null_input_without_plugin.status(), StatusCode::BAD_REQUEST);
+        let plugin_without_input = call(
+            &app,
+            Method::POST,
+            "/api/v1/messages",
+            &raw,
+            Some("template-no-input"),
+            Some(json!({"plugin_id":"mail-template"})),
+        )
+        .await;
+        assert_eq!(plugin_without_input.status(), StatusCode::BAD_REQUEST);
         let missing = call(
             &app,
             Method::POST,
             "/api/v1/messages",
             &raw,
             Some("template-3"),
-            Some(json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid"}}})),
+            Some(json!({"plugin_id":"mail-template","plugin_input":{"scenario_id":"order.paid"}})),
         )
         .await;
         assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -2075,7 +2170,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let disabled = call(&app, Method::POST, "/api/v1/messages", &raw, Some("template-disabled"), Some(json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1003"}}}}))).await;
+        let disabled = call(&app, Method::POST, "/api/v1/messages", &raw, Some("template-disabled"), Some(json!({"plugin_id":"mail-template","plugin_input":{"scenario_id":"order.paid","variables":{"order_id":"A1003"}}}))).await;
         assert_eq!(disabled.status(), StatusCode::CONFLICT);
         if let Database::Sqlite(pool) = &db {
             sqlx::query("DELETE FROM mail_templates WHERE id='tpl_test'")
@@ -2089,7 +2184,7 @@ mod tests {
             "/api/v1/messages",
             &raw,
             Some("template-1"),
-            Some(json!({"template":{"plugin_id":"mail-template","input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}}})),
+            Some(json!({"sender_identity_id":"","to":[],"subject":"","text":null,"plugin_id":"mail-template","plugin_input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}})),
         )
         .await;
         assert_eq!(retry.status(), StatusCode::ACCEPTED);
@@ -2115,7 +2210,9 @@ mod tests {
             "/api/v1/messages",
             &raw,
             Some("plugin-event-1"),
-            Some(json!({"template":{"plugin_id":"test-resolver","input":{"scenario_id":"custom.alert"}}})),
+            Some(
+                json!({"plugin_id":"test-resolver","plugin_input":{"scenario_id":"custom.alert"}}),
+            ),
         )
         .await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
