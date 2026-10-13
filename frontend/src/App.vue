@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { hasPluginManagementPage, pluginDescriptor } from './plugins/registry.js'
 import PluginContainer from './plugin-runtime/PluginContainer.vue'
 
@@ -355,9 +355,26 @@ function editToken(token) {
     sender_identity_ids: token.sender_identity_ids.filter(id => activeIds.has(id)) })
   document.getElementById('token-form')?.scrollIntoView({ behavior: 'smooth' })
 }
+function prepareReplacementToken(token) {
+  clearNotice()
+  if (issuedTokenSecret.value) {
+    error.value = '请先复制并保存当前新建的 Token 密钥。'
+    document.getElementById('issued-token-secret')?.scrollIntoView({ behavior: 'smooth' })
+    return
+  }
+  tokenEditingId.value = null
+  const activeIds = new Set(identities.value.filter(identity => identity.enabled && !identity.deleted_at
+    && accounts.value.some(account => account.id === identity.smtp_account_id && account.enabled)).map(identity => identity.id))
+  Object.assign(tokenForm, { name: token.name, purpose: token.purpose || '',
+    expires_at: token.expires_at && new Date(token.expires_at) > new Date() ? toLocal(token.expires_at) : '',
+    sender_identity_ids: token.sender_identity_ids.filter(id => activeIds.has(id)) })
+  notice.value = '已填入原 Token 的设置。创建后请立即复制新密钥，更新调用方，再撤销旧 Token。'
+  document.getElementById('token-form')?.scrollIntoView({ behavior: 'smooth' })
+}
 function cancelTokenEdit() { tokenEditingId.value = null; Object.assign(tokenForm, emptyTokenForm()) }
 async function saveToken() {
   if (!tokenEditingId.value && issuedTokenSecret.value) return
+  const creating = !tokenEditingId.value
   clearNotice(); busy.value = true
   const body = { name: tokenForm.name.trim(), purpose: tokenForm.purpose.trim() || null,
     expires_at: toIso(tokenForm.expires_at), sender_identity_ids: tokenForm.sender_identity_ids }
@@ -373,6 +390,10 @@ async function saveToken() {
     }
     cancelTokenEdit()
     await loadTokens()
+    if (creating) {
+      await nextTick()
+      document.getElementById('issued-token-secret')?.scrollIntoView({ behavior: 'smooth' })
+    }
   } catch (cause) { error.value = cause.message }
   finally { busy.value = false }
 }
@@ -597,7 +618,7 @@ onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
 
         </div>
         <div v-show="activeTab === 'tokens'" id="panel-tokens" class="tab-content" role="tabpanel" aria-labelledby="tab-tokens">
-        <section v-if="issuedTokenSecret" class="panel secret-panel" aria-live="polite">
+        <section v-if="issuedTokenSecret" id="issued-token-secret" class="panel secret-panel" aria-live="polite">
           <div class="panel-heading"><h2>新 Token 密钥</h2><p>此密钥只显示这一次。请现在复制并妥善保存，离开此页面后无法再次查看。</p></div>
           <div class="secret-value"><code>{{ issuedTokenSecret }}</code><div class="secret-actions"><button class="primary-button" type="button" @click="copyTokenHandoff">复制调用信息</button><button class="text-button" type="button" @click="copyTokenSecret">仅复制密钥</button><button class="text-button" type="button" @click="clearIssuedToken">我已保存</button></div></div>
           <p class="handoff-note">调用信息包含密钥、服务地址、允许的发件身份 ID 和请求示例。请通过可信渠道交给调用者。</p>
@@ -618,11 +639,11 @@ onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
         </section>
 
         <section class="panel" aria-labelledby="tokens-title">
-          <div class="panel-heading split-heading"><div><h2 id="tokens-title">API Token</h2><p>密钥只在创建时显示；列表不会返回密钥。</p></div><span class="count">{{ tokens.length }} 个 Token</span></div>
+          <div class="panel-heading split-heading"><div><h2 id="tokens-title">API Token</h2><p>列表仅显示前缀，无法复制已有 Token 的完整密钥。若未保存密钥，请按原设置新建 Token。</p></div><span class="count">{{ tokens.length }} 个 Token</span></div>
           <p v-if="tokens.length === 0" class="empty-state">还没有 API Token。</p>
           <div v-for="token in tokens" :key="token.id" class="account-row">
             <div class="token-summary"><div class="account-name">{{ token.name }} <span :class="['badge', token.status === 'enabled' ? 'enabled' : 'disabled']">{{ token.status === 'enabled' ? '已启用' : token.status === 'revoked' ? '已撤销' : '已停用' }}</span></div><div class="account-details">前缀 {{ token.lookup_prefix }} · {{ token.purpose || '无用途说明' }} · {{ token.expires_at ? `到期 ${new Date(token.expires_at).toLocaleString()}` : '永不过期' }}</div><div class="permission-list">允许身份：{{ token.sender_identity_ids.map(id => { const item = identities.find(identity => identity.id === id); return item ? `${item.display_name} <${item.email_address}>` : id }).join('、') || '无' }}</div></div>
-            <div class="row-actions"><button v-if="token.status !== 'revoked'" class="text-button" :disabled="busy" @click="editToken(token)">编辑</button><button v-if="token.status !== 'revoked'" class="text-button" :disabled="busy" @click="setTokenStatus(token, token.status === 'enabled' ? 'disable' : 'enable')">{{ token.status === 'enabled' ? '停用' : '启用' }}</button><button v-if="token.status !== 'revoked'" class="text-button danger" :disabled="busy" @click="setTokenStatus(token, 'revoke')">撤销</button></div>
+            <div class="row-actions"><button v-if="token.status !== 'revoked'" class="text-button" :disabled="busy" @click="prepareReplacementToken(token)">按此配置新建</button><button v-if="token.status !== 'revoked'" class="text-button" :disabled="busy" @click="editToken(token)">编辑</button><button v-if="token.status !== 'revoked'" class="text-button" :disabled="busy" @click="setTokenStatus(token, token.status === 'enabled' ? 'disable' : 'enable')">{{ token.status === 'enabled' ? '停用' : '启用' }}</button><button v-if="token.status !== 'revoked'" class="text-button danger" :disabled="busy" @click="setTokenStatus(token, 'revoke')">撤销</button></div>
           </div>
         </section>
 
