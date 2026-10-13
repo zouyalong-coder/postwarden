@@ -47,6 +47,28 @@
 
 `mail-template` 插件可替换发件身份、主题、文本/HTML 正文和 `to`、`cc`、`bcc` 地址。模板中的 `{{order_id}}` 等占位符从 `variables` 取值；变量缺失或类型不合适时拒绝请求。HTML 正文中的变量会转义。若模板启用 `allow_caller_recipients`，请求提供的地址会追加到固定地址；否则由模板地址取代请求地址。最终邮件必须至少有一个 To 地址。调用方仍需持有模板所选发件身份的 Token 授权。
 
+管理员读取模板列表时，每个模板的 `variables` 属性列出主题、纯文本和 HTML 正文中的 `{{变量名}}`，重复变量只列一次。插件管理页按各模板的场景 ID 和变量生成调用示例；示例默认收起，可展开并复制。模板内容更新后，变量列表和示例会按新内容重新生成，无需维护另一份变量定义。
+
+变量值可以是字符串、数字或布尔值，不能是数组或对象。多行内容应放在一个字符串中：JSON 请求体用 `\n` 表示换行，客户端使用 JSON 序列化器时可直接传入包含换行符的字符串。例如 `paths` 表示变化的文件路径：
+
+```json
+{
+  "sender_identity_id": "",
+  "to": [],
+  "subject": "",
+  "text": null,
+  "plugin_id": "mail-template",
+  "plugin_input": {
+    "scenario_id": "sky_data_synced",
+    "variables": {
+      "paths": "src/a.rs\nfrontend/src/App.vue\nREADME.md"
+    }
+  }
+}
+```
+
+在纯文本模板中写 `变化的文件：`、换行、`{{paths}}`，每条路径就从新的一行开始。HTML 模板会转义变量内容；传入 `<br>` 会显示为文字，单纯的换行符在普通 HTML 中也不会自动显示成换行。如需在 HTML 正文保留路径的换行，可将占位符放在 `<pre>{{paths}}</pre>` 中。
+
 核心只按顶层 `plugin_id` 找到已启用插件，并把 `plugin_input` 交给该插件的 `compose` 钩子。插件返回成形后的草稿，核心重新校验地址、内容和发件身份权限，再进入普通发送钩子与 SMTP 流程。`plugin_id` 与 `plugin_input` 必须同时提供，且 `plugin_input` 必须是 JSON 对象。插件可通过 `manage` 暴露受管理员会话和 CSRF 保护的管理资源；`mail-template` 的资源位于 `/api/v1/admin/plugins/mail-template/templates`。停用插件后，新模板请求会被拒绝，管理资源返回 `409 plugin_disabled`；重新启用后可继续管理已有模板。
 
 插件请求的幂等比较基于插件 ID、插件输入、请求中的邮件字段及发送模式。同一个键重试时返回原消息，即使模板后来修改、删除或插件停用；更换键才会按当前配置重新成形。

@@ -22,6 +22,7 @@ pub struct Template {
     pub subject_template: String,
     pub text_template: Option<String>,
     pub html_template: Option<String>,
+    pub variables: Vec<String>,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
@@ -50,6 +51,25 @@ pub enum RenderError {
 }
 
 impl Template {
+    fn variables(subject: &str, text: Option<&str>, html: Option<&str>) -> Vec<String> {
+        let mut variables = Vec::new();
+        for input in std::iter::once(subject).chain(text).chain(html) {
+            let mut rest = input;
+            while let Some(start) = rest.find("{{") {
+                let after = &rest[start + 2..];
+                let Some(end) = after.find("}}") else {
+                    break;
+                };
+                let name = &after[..end];
+                if valid_identifier(name) && !variables.iter().any(|existing| existing == name) {
+                    variables.push(name.to_owned());
+                }
+                rest = &after[end + 2..];
+            }
+        }
+        variables
+    }
+
     pub fn render(&self, values: &Map<String, Value>) -> Result<RenderedTemplate, RenderError> {
         let subject = render_text(&self.subject_template, values, false)?;
         let text = self
@@ -196,6 +216,11 @@ impl TryFrom<SqliteRow> for Template {
     type Error = serde_json::Error;
 
     fn try_from(r: SqliteRow) -> Result<Self, Self::Error> {
+        let variables = Template::variables(
+            &r.subject_template,
+            r.text_template.as_deref(),
+            r.html_template.as_deref(),
+        );
         Ok(Self {
             id: r.id,
             scenario_id: r.scenario_id,
@@ -206,6 +231,7 @@ impl TryFrom<SqliteRow> for Template {
             subject_template: r.subject_template,
             text_template: r.text_template,
             html_template: r.html_template,
+            variables,
             to: serde_json::from_str(&r.to_json)?,
             cc: serde_json::from_str(&r.cc_json)?,
             bcc: serde_json::from_str(&r.bcc_json)?,
@@ -220,6 +246,11 @@ fn time(t: NaiveDateTime) -> String {
 }
 impl From<MysqlRow> for Template {
     fn from(r: MysqlRow) -> Self {
+        let variables = Template::variables(
+            &r.subject_template,
+            r.text_template.as_deref(),
+            r.html_template.as_deref(),
+        );
         Self {
             id: r.id,
             scenario_id: r.scenario_id,
@@ -230,6 +261,7 @@ impl From<MysqlRow> for Template {
             subject_template: r.subject_template,
             text_template: r.text_template,
             html_template: r.html_template,
+            variables,
             to: r.to_json.0,
             cc: r.cc_json.0,
             bcc: r.bcc_json.0,
@@ -644,6 +676,7 @@ mod tests {
             subject_template: "Hello {{name}}".into(),
             text_template: None,
             html_template: Some("<b>{{name}}</b>".into()),
+            variables: vec!["name".into()],
             to: vec!["x@y.com".into()],
             cc: vec![],
             bcc: vec![],
@@ -665,6 +698,18 @@ mod tests {
         assert_eq!(
             broken.render(&Map::new()),
             Err(RenderError::InvalidPlaceholder)
+        );
+    }
+
+    #[test]
+    fn extracts_deduplicated_variables_in_template_order() {
+        assert_eq!(
+            Template::variables(
+                "Hello {{name}}, {{first_name}}",
+                Some("{{name}} {{order_id}}"),
+                Some("{{order_id}} {{_footer}}"),
+            ),
+            vec!["name", "first_name", "order_id", "_footer"]
         );
     }
 }

@@ -48,6 +48,31 @@ async function loadTemplates() {
 
 function addressText(value) { return Array.isArray(value) ? value.join(', ') : '' }
 function parseAddresses(value) { return value.split(/[\n,;]+/).map(item => item.trim()).filter(Boolean) }
+function callExample(template) {
+  const payload = {
+    sender_identity_id: '',
+    to: template.to?.length ? [] : ['recipient@example.com'],
+    subject: '',
+    text: null,
+    plugin_id: 'mail-template',
+    plugin_input: {
+      scenario_id: template.scenario_id,
+      variables: Object.fromEntries((template.variables || []).map(name => [name, `<${name}>`])),
+    },
+  }
+  const shellQuote = value => `'${String(value).replaceAll("'", "'\"'\"'")}'`
+  return [
+    `curl -X POST ${shellQuote(`${window.location.origin}/api/v1/messages`)}`,
+    "  -H 'Authorization: Bearer <API_TOKEN>'",
+    "  -H 'Content-Type: application/json'",
+    "  -H 'Idempotency-Key: replace-with-unique-request-id'",
+    `  -d ${shellQuote(JSON.stringify(payload, null, 2))}`,
+  ].join(' \\\n')
+}
+async function copyCallExample(template) {
+  try { await navigator.clipboard.writeText(callExample(template)); notice.value = `“${template.name}”调用示例已复制。` }
+  catch { error.value = '无法访问剪贴板，请手动复制调用示例。' }
+}
 function resetForm() { editingId.value = null; Object.assign(form, emptyForm()) }
 function createTemplate() {
   error.value = ''; notice.value = ''; deletingTemplate.value = null; resetForm(); editorOpen.value = true
@@ -131,6 +156,12 @@ onMounted(async () => {
         <div class="token-summary"><div class="account-name">{{ template.name }} <span :class="['badge', template.enabled ? 'enabled' : 'disabled']">{{ template.enabled ? '已启用' : '已停用' }}</span></div><div class="account-details">场景 ID：<code>{{ template.scenario_id }}</code> · 发件身份：{{ identities.find(item => item.id === template.sender_identity_id)?.display_name || template.sender_identity_id || '未固定' }}</div><div class="permission-list">收件人：{{ addressText(template.to) || '由请求提供' }}<template v-if="template.cc?.length"> · 抄送：{{ addressText(template.cc) }}</template><template v-if="template.bcc?.length"> · 密送：{{ addressText(template.bcc) }}</template></div></div>
         <div class="row-actions"><button class="text-button" :disabled="busy" @click="editTemplate(template)">编辑</button><button class="text-button danger" :disabled="busy" @click="deleteTemplate(template, $event)">删除</button></div>
       </div>
+      <details class="template-call-example">
+        <summary>查看调用示例</summary>
+        <div class="split-heading call-example-heading"><h3>调用示例</h3><button class="text-button" type="button" @click="copyCallExample(template)">复制示例</button></div>
+        <pre class="token-example"><code>{{ callExample(template) }}</code></pre>
+        <p class="helper-text">替换 API Token、变量值和每次请求的幂等键<template v-if="!template.to?.length">，并填写收件地址</template>。</p>
+      </details>
       <div v-if="deletingTemplate?.id === template.id" class="template-delete-confirm" role="group" :aria-label="`删除 ${template.name}`">
         <p>确定删除邮件模板“{{ template.name }}”（{{ template.scenario_id }}）？</p>
         <div class="row-actions"><button :ref="setConfirmDeleteButton" class="text-button danger" type="button" :disabled="busy" @click="confirmDeleteTemplate">确认删除</button><button class="text-button" type="button" :disabled="busy" @click="cancelDeleteTemplate">取消</button></div>
@@ -138,9 +169,7 @@ onMounted(async () => {
     </div>
   </section>
   <section class="panel template-guide">
-    <div class="panel-heading"><h2>调用方式示例</h2><p>使用 Token 调用 <code>POST /api/v1/messages</code>，并设置唯一的 <code>Idempotency-Key</code>。模板插件会读取请求中的模板信息。</p></div>
-    <pre class="token-example"><code>{ "sender_identity_id": "", "to": [], "subject": "", "text": null, "plugin_id": "mail-template", "plugin_input": { "scenario_id": "order.created", "variables": { "customer_name": "林先生", "order_id": "PW-2048", "amount": "¥128.00" } } }</code></pre>
-    <p class="helper-text">例如模板正文可写：您好，<code v-pre>{{customer_name}}</code>，订单 <code v-pre>{{order_id}}</code> 已创建，金额 <code v-pre>{{amount}}</code>。若模板设置了固定收件人，调用方无需知道 SMTP 配置或重复传递地址。</p>
+    <div class="panel-heading"><h2>调用说明</h2><p>展开模板下方的示例，可查看该模板的场景 ID，以及主题和正文中的 <code v-pre>{{变量名}}</code>。模板设置了固定收件人时，调用方无需重复传递地址。</p></div>
   </section>
 
   <PluginContainer :visible="editorOpen" :title="editingId ? '编辑模板' : '创建模板'" @close="closeTemplateEditor">

@@ -23,7 +23,7 @@ PostWarden 是自托管的 SMTP 发送代理和授权中心。调用方使用 Po
 
 ## 场景邮件模板
 
-管理员可在「插件」中启用 `mail-template`，通过「管理」打开插件工作区并查看模板列表；创建和编辑模板时打开第二层弹窗，设置场景 ID、发件身份、主题及正文占位符，并配置固定收件人和抄送人。插件停用时管理入口不可用，管理 API 也会拒绝请求。调用方继续使用普通邮件发送 API，提供模板插件 ID、场景 ID、变量和幂等键。例如异步发送：
+管理员可在「插件」中启用 `mail-template`，通过「管理」打开插件工作区并查看模板列表；创建和编辑模板时打开第二层弹窗，设置场景 ID、发件身份、主题及正文占位符，并配置固定收件人和抄送人。每个模板的调用示例默认收起，点击「查看调用示例」可展开并复制；示例会列出该模板所需的变量。插件停用时管理入口不可用，管理 API 也会拒绝请求。调用方继续使用普通邮件发送 API，提供模板插件 ID、场景 ID、变量和幂等键。例如异步发送：
 
 ```sh
 curl -X POST https://postwarden.example.com/api/v1/messages \
@@ -32,6 +32,8 @@ curl -X POST https://postwarden.example.com/api/v1/messages \
   -H 'Content-Type: application/json' \
   -d '{"sender_identity_id":"","to":[],"subject":"","text":null,"plugin_id":"mail-template","plugin_input":{"scenario_id":"order.paid","variables":{"order_id":"A1001"}}}'
 ```
+
+多条文件路径等多行内容应作为一个字符串传给变量，例如 `"paths":"src/a.rs\nfrontend/src/App.vue"`。在 JSON 中写 `\n`，模板渲染后的纯文本邮件会保留换行；路径数组需先用 `join('\n')` 拼接，不能直接作为变量值传入。详见 [API 说明](docs/api.md#模板插件)。
 
 同步入口仍为 `/api/v1/messages/send`。模板插件形成草稿后，核心核对 Token 对发件身份的授权并执行原有发送流程。管理员可以在「插件」中停用 `mail-template`；停用后新的模板请求会被拒绝。其他构建期插件可实现 `compose` 和 `manage` 来扩展成形规则与管理资源。接入步骤见 [插件开发](docs/plugin-development.md)，请求格式见 [API 说明](docs/api.md)。
 

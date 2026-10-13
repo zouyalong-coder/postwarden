@@ -137,6 +137,13 @@ footer span { padding: 0 5px; }
 .plugin-dialog-content > :first-child { margin-top: 0; }
 .template-delete-confirm { margin: 0 0 16px; padding: 16px; border: 1px solid #e9cdc7; border-radius: 8px; background: #fff7f5; }
 .template-delete-confirm p { margin: 0 0 12px; }
+.template-call-example { padding: 0 0 16px; }
+.template-call-example summary { width: fit-content; color: #345c45; cursor: pointer; font-size: 13px; font-weight: 600; }
+.template-call-example summary:hover { text-decoration: underline; }
+.template-call-example summary:focus-visible { outline: 2px solid #345c45; outline-offset: 3px; }
+.template-call-example[open] summary { margin-bottom: 12px; }
+.template-call-example .call-example-heading { display: flex; justify-content: space-between; }
+.template-call-example .helper-text { margin: 0; }
 @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } .account-row { align-items: flex-start; flex-direction: column; gap: 10px; } .account-controls { width: 100%; align-items: flex-start; } .row-actions { gap: 20px; flex-wrap: wrap; } .test-message summary { text-align: left; } .test-message-form { grid-template-columns: 1fr; } .test-message-form .primary-button, .test-message-form .helper-text { grid-column: auto; } .secret-value { align-items: stretch; flex-direction: column; } .secret-actions { justify-content: space-between; } .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .audit-row { align-items: flex-start; flex-direction: column; gap: 5px; } .audit-row span { text-align: left; } }
 @media (max-width: 520px) { .topbar { padding-inline: 20px; } .environment { display: none; } .panel { padding: 20px; } .split-heading { flex-direction: column; gap: 10px; } }
 @media (max-width: 600px) { .plugin-dialog-backdrop { place-items: center; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); } .plugin-dialog { width: 100%; max-height: 100%; border-radius: 12px; } .plugin-dialog-header { padding: 14px 18px; } .plugin-dialog-content { padding: 18px; padding-bottom: max(18px, env(safe-area-inset-bottom)); } }
