@@ -29,6 +29,9 @@ input:not([type="checkbox"]), select { width: 100%; min-height: 42px; padding: 9
 textarea { width: 100%; min-height: 112px; padding: 11px 12px; border: 1px solid #d2d9d0; border-radius: 8px; outline: none; background: #fff; color: #233126; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
 input:focus, select:focus, textarea:focus { border-color: #477758; box-shadow: 0 0 0 3px #47775822; }
 .login-panel { max-width: 460px; }
+.password-panel { margin-bottom: 22px; }
+.password-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: end; }
+.password-form .form-actions { grid-column: 1 / -1; margin-top: 0; }
 .login-panel label + label { margin-top: 18px; }
 .login-panel .primary-button { margin-top: 24px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -144,6 +147,6 @@ footer span { padding: 0 5px; }
 .template-call-example[open] summary { margin-bottom: 12px; }
 .template-call-example .call-example-heading { display: flex; justify-content: space-between; }
 .template-call-example .helper-text { margin: 0; }
-@media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } .account-row { align-items: flex-start; flex-direction: column; gap: 10px; } .account-controls { width: 100%; align-items: flex-start; } .row-actions { gap: 20px; flex-wrap: wrap; } .test-message summary { text-align: left; } .test-message-form { grid-template-columns: 1fr; } .test-message-form .primary-button, .test-message-form .helper-text { grid-column: auto; } .secret-value { align-items: stretch; flex-direction: column; } .secret-actions { justify-content: space-between; } .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .audit-row { align-items: flex-start; flex-direction: column; gap: 5px; } .audit-row span { text-align: left; } }
+@media (max-width: 700px) { .form-grid, .password-form { grid-template-columns: 1fr; } .password-form .form-actions { grid-column: auto; } .account-row { align-items: flex-start; flex-direction: column; gap: 10px; } .account-controls { width: 100%; align-items: flex-start; } .row-actions { gap: 20px; flex-wrap: wrap; } .test-message summary { text-align: left; } .test-message-form { grid-template-columns: 1fr; } .test-message-form .primary-button, .test-message-form .helper-text { grid-column: auto; } .secret-value { align-items: stretch; flex-direction: column; } .secret-actions { justify-content: space-between; } .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .audit-row { align-items: flex-start; flex-direction: column; gap: 5px; } .audit-row span { text-align: left; } }
 @media (max-width: 520px) { .topbar { padding-inline: 20px; } .environment { display: none; } .panel { padding: 20px; } .split-heading { flex-direction: column; gap: 10px; } }
 @media (max-width: 600px) { .plugin-dialog-backdrop { place-items: center; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); } .plugin-dialog { width: 100%; max-height: 100%; border-radius: 12px; } .plugin-dialog-header { padding: 14px 18px; } .plugin-dialog-content { padding: 18px; padding-bottom: max(18px, env(safe-area-inset-bottom)); } }

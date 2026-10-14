@@ -106,6 +106,7 @@
 | 路径 | 主要操作 |
 | --- | --- |
 | `/api/v1/admin/session` | 登录、获取当前会话、退出 |
+| `/api/v1/admin/password` | 已登录管理员提交 `current_password` 和 `new_password` 修改密码；新密码至少 12 字符，成功后撤销全部管理员会话并返回 `204` |
 | `/api/v1/admin/smtp-accounts` | 创建、列表、读取、更新、删除、启停 SMTP Account |
 | `/api/v1/admin/smtp-accounts/{id}/test-connection` | 测试连接与认证；不发送测试邮件 |
 | `/api/v1/admin/smtp-accounts/{id}/test-message` | 向管理员指定地址发送测试邮件，并记录管理员审计事件 |

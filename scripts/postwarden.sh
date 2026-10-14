@@ -5,11 +5,12 @@ set -eu
 usage() {
     cat <<'EOF'
 Usage: ./scripts/postwarden.sh init [admin-login]
-       ./scripts/postwarden.sh start
+       ./scripts/postwarden.sh start [--reset-admin-password]
 
 init   Build the local application, create .env if missing, apply database
        migrations, and interactively initialize the administrator.
-start  Run the same service entrypoint used by the container image.
+start  Run the same service entrypoint used by the container image. Add
+       --reset-admin-password to set a new administrator password before serving.
 EOF
 }
 
@@ -19,9 +20,15 @@ case "$command_name" in
     help|-h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
 esac
-if [ "$command_name" = start ] && [ "$#" -ne 1 ]; then
-    usage >&2
-    exit 2
+if [ "$command_name" = start ]; then
+    if [ "$#" -gt 2 ]; then
+        usage >&2
+        exit 2
+    fi
+    if [ "$#" -eq 2 ] && [ "$2" != "--reset-admin-password" ]; then
+        usage >&2
+        exit 2
+    fi
 fi
 if [ "$command_name" = init ] && [ "$#" -gt 2 ]; then
     usage >&2
@@ -105,6 +112,9 @@ case "$command_name" in
         ;;
     start)
         printf 'Starting PostWarden...\n'
+        if [ "$#" -eq 2 ]; then
+            exec "$binary" --reset-admin-password
+        fi
         exec "$binary"
         ;;
 esac

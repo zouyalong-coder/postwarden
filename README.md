@@ -17,6 +17,10 @@ PostWarden 是自托管的 SMTP 发送代理和授权中心。调用方使用 Po
 
 在没有交互式终端的自动化环境中，可设置 `POSTWARDEN_SETUP_PASSWORD_FILE` 指向仅文件所有者可读的密码文件；初始化会读取它而不显示密码。初始化完成后应移除该文件。
 
+登录后可在管理页面更改管理员密码：输入当前密码和至少 12 字符的新密码。成功后所有管理员会话立即失效，需用新密码重新登录。
+
+忘记密码时，停止服务后使用 `./scripts/postwarden.sh start --reset-admin-password` 启动。启动前会交互式要求输入并确认新密码，重置成功后才开始监听；原有会话全部失效。无交互式终端时，也可设置 `POSTWARDEN_SETUP_PASSWORD_FILE` 指向仅文件所有者可读的密码文件，再执行同一命令。重置后移除该文件，并在下一次启动时去掉 `--reset-admin-password`。密码不会作为命令行参数传递。镜像中对应命令为 `postwarden-launcher start --reset-admin-password`；使用 Compose 时可运行交互式一次性容器执行该命令，然后按原方式启动服务。
+
 本地默认访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)，健康检查为 `/health`。`.env` 默认使用 `sqlite://data/postwarden.db`，数据目录自动创建；默认 `POSTWARDEN_COOKIE_SECURE=false` 仅适用于本地 HTTP。需要更改监听地址、数据库或保留期时，编辑 `.env` 后重新执行 `start`。`POSTWARDEN_PENDING_DAYS`、`POSTWARDEN_CONTENT_DAYS`、`POSTWARDEN_AUDIT_DAYS` 默认分别为 7、7、90 天。`.env` 与主密钥必须一起安全保存；丢失主密钥将无法解密已保存的 SMTP 凭证和邮件内容。配置字段可参见 [`.env.example`](.env.example)。
 
 启动脚本在本地和镜像中相同：容器默认执行 `postwarden-launcher start`；初始化时执行 `postwarden-launcher init admin`。两种方式都由 Rust 服务运行迁移并启动同进程 Worker。

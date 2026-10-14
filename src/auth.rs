@@ -8,7 +8,7 @@ use axum::{
     extract::{FromRequestParts, State},
     http::{header, request::Parts, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -89,7 +89,163 @@ impl FromRequestParts<AppState> for AdminAuth {
 
 /// Router mounted beneath `/api/v1/admin` by the application router.
 pub fn router() -> Router<AppState> {
-    Router::new().route("/session", get(get_session).post(login).delete(logout))
+    Router::new()
+        .route("/session", get(get_session).post(login).delete(logout))
+        .route("/password", post(change_password))
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+}
+
+async fn change_password(
+    admin: AdminAuth,
+    State(state): State<AppState>,
+    Json(request): Json<ChangePasswordRequest>,
+) -> Response {
+    if request.new_password.chars().count() < 12 {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_password",
+            "New password must be at least 12 characters",
+        );
+    }
+    if request.current_password == request.new_password {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "password_unchanged",
+            "New password must differ from current password",
+        );
+    }
+    let Some((_, _, old_hash)) = (match find_admin(&state.database, &admin.login_name).await {
+        Ok(value) => value,
+        Err(()) => return internal_error(),
+    }) else {
+        return unauthorized();
+    };
+    let parsed = match PasswordHash::new(&old_hash) {
+        Ok(hash) => hash,
+        Err(_) => return internal_error(),
+    };
+    if Argon2::default()
+        .verify_password(request.current_password.as_bytes(), &parsed)
+        .is_err()
+    {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_current_password",
+            "Current password is incorrect",
+        );
+    }
+    let new_hash = match hash_password(&request.new_password) {
+        Ok(hash) => hash,
+        Err(_) => return internal_error(),
+    };
+    match replace_password(&state.database, &admin.id, Some(&old_hash), &new_hash).await {
+        Ok(true) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            append_cookie(
+                &mut response,
+                &expired_cookie(SESSION_COOKIE, state.cookie_secure, true),
+            );
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        Ok(false) => api_error(
+            StatusCode::CONFLICT,
+            "password_changed",
+            "Password changed; sign in again",
+        ),
+        Err(_) => internal_error(),
+    }
+}
+
+/// Reset the singleton administrator's password during an explicitly requested startup.
+pub async fn reset_admin_password(
+    database: &Database,
+    password: &str,
+) -> Result<(), Box<dyn Error>> {
+    if password.chars().count() < 12 {
+        return Err("administrator password must be at least 12 characters".into());
+    }
+    let id: Option<String> = match database {
+        Database::Sqlite(pool) => {
+            sqlx::query_scalar("SELECT id FROM admin_users")
+                .fetch_optional(pool)
+                .await?
+        }
+        Database::Mysql(pool) => {
+            sqlx::query_scalar("SELECT id FROM admin_users")
+                .fetch_optional(pool)
+                .await?
+        }
+    };
+    let id = id.ok_or("administrator has not been initialized")?;
+    let hash = hash_password(password).map_err(|_| "could not hash administrator password")?;
+    if !replace_password(database, &id, None, &hash).await? {
+        return Err("administrator no longer exists".into());
+    }
+    Ok(())
+}
+
+fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+    let salt = SaltString::generate(&mut OsRng);
+    Ok(Argon2::default()
+        .hash_password(password.as_bytes(), &salt)?
+        .to_string())
+}
+
+async fn replace_password(
+    database: &Database,
+    id: &str,
+    expected_hash: Option<&str>,
+    new_hash: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = Utc::now().naive_utc();
+    match database {
+        Database::Sqlite(pool) => {
+            let mut tx = pool.begin().await?;
+            let mut query = if expected_hash.is_some() {
+                sqlx::query("UPDATE admin_users SET password_hash=?, updated_at=? WHERE id=? AND password_hash=?")
+            } else {
+                sqlx::query("UPDATE admin_users SET password_hash=?, updated_at=? WHERE id=?")
+            };
+            query = query.bind(new_hash).bind(sqlite_time(now)).bind(id);
+            if let Some(hash) = expected_hash {
+                query = query.bind(hash);
+            }
+            let changed = query.execute(&mut *tx).await?.rows_affected() == 1;
+            if changed {
+                sqlx::query("UPDATE admin_sessions SET revoked_at=? WHERE admin_id=? AND revoked_at IS NULL")
+                    .bind(sqlite_time(now)).bind(id).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+            Ok(changed)
+        }
+        Database::Mysql(pool) => {
+            let mut tx = pool.begin().await?;
+            let mut query = if expected_hash.is_some() {
+                sqlx::query("UPDATE admin_users SET password_hash=?, updated_at=? WHERE id=? AND password_hash=?")
+            } else {
+                sqlx::query("UPDATE admin_users SET password_hash=?, updated_at=? WHERE id=?")
+            };
+            query = query.bind(new_hash).bind(now).bind(id);
+            if let Some(hash) = expected_hash {
+                query = query.bind(hash);
+            }
+            let changed = query.execute(&mut *tx).await?.rows_affected() == 1;
+            if changed {
+                sqlx::query("UPDATE admin_sessions SET revoked_at=? WHERE admin_id=? AND revoked_at IS NULL")
+                    .bind(now).bind(id).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+            Ok(changed)
+        }
+    }
 }
 
 /// Create the initial administrator once.
@@ -98,7 +254,7 @@ pub async fn initialize_admin(
     login_name: &str,
     password: &str,
 ) -> Result<(), Box<dyn Error>> {
-    if login_name.trim().is_empty() || password.len() < 12 {
+    if login_name.trim().is_empty() || password.chars().count() < 12 {
         return Err(
             "administrator login must be non-empty and password at least 12 characters".into(),
         );
@@ -121,11 +277,8 @@ pub async fn initialize_admin(
         return Err("administrator already exists".into());
     }
 
-    let salt = SaltString::generate(&mut OsRng);
-    let password_hash = Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|_| "could not hash administrator password")?
-        .to_string();
+    let password_hash =
+        hash_password(password).map_err(|_| "could not hash administrator password")?;
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().naive_utc();
     match database {

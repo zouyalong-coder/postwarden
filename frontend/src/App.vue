@@ -5,6 +5,7 @@ import PluginContainer from './plugin-runtime/PluginContainer.vue'
 
 const session = ref({ authenticated: false, login_name: null })
 const login = reactive({ login_name: '', password: '' })
+const passwordForm = reactive({ current_password: '', new_password: '', confirm_password: '' })
 const accounts = ref([])
 const identities = ref([])
 const tokens = ref([])
@@ -103,7 +104,9 @@ async function api(path, { method = 'GET', body } = {}) {
   })
   if (!response.ok) {
     const details = await response.json().catch(() => ({}))
-    throw new Error(details.message || `请求失败 (${response.status})`)
+    const failure = new Error(details.message || `请求失败 (${response.status})`)
+    failure.code = details.code
+    throw failure
   }
   return response.status === 204 ? null : response.json()
 }
@@ -160,11 +163,51 @@ async function signOut() {
     issuedTokenSecret.value = ''
     issuedTokenIdentityIds.value = []
     configuredAccountId.value = null
+    clearPasswordForm()
     selectTab('accounts')
     cancelEdit()
     cancelIdentityEdit()
   } catch (cause) { error.value = cause.message }
   finally { busy.value = false }
+}
+
+function clearPasswordForm() {
+  passwordForm.current_password = ''
+  passwordForm.new_password = ''
+  passwordForm.confirm_password = ''
+}
+
+async function changePassword() {
+  clearNotice()
+  if (Array.from(passwordForm.new_password).length < 12) {
+    error.value = '新密码至少需要 12 个字符。'
+    clearPasswordForm()
+    return
+  }
+  if (passwordForm.new_password !== passwordForm.confirm_password) {
+    error.value = '两次输入的新密码不一致。'
+    clearPasswordForm()
+    return
+  }
+  if (!window.confirm('更改密码后，当前登录会话将失效，需要使用新密码重新登录。继续吗？')) return
+  busy.value = true
+  try {
+    await api('/password', { method: 'POST', body: {
+      current_password: passwordForm.current_password,
+      new_password: passwordForm.new_password,
+    } })
+    session.value = { authenticated: false, login_name: null }
+    accounts.value = []; identities.value = []; tokens.value = []; plugins.value = []; messages.value = []
+    messageDetail.value = null
+    issuedTokenSecret.value = ''
+    issuedTokenIdentityIds.value = []
+    configuredAccountId.value = null
+    clearPasswordForm()
+    notice.value = '密码已更改，请使用新密码重新登录。'
+  } catch (cause) {
+    error.value = cause.code === 'invalid_current_password' ? '当前密码不正确。' : cause.message
+    clearPasswordForm()
+  } finally { busy.value = false }
 }
 
 function edit(account) {
@@ -557,6 +600,15 @@ onUnmounted(() => window.removeEventListener('popstate', syncTabFromPath))
       </form>
 
       <template v-else>
+        <section class="panel password-panel" aria-labelledby="password-title">
+          <div class="panel-heading"><h2 id="password-title">更改管理员密码</h2><p>密码至少 12 个字符。更改后所有登录会话都会失效，需要重新登录。</p></div>
+          <form class="password-form" @submit.prevent="changePassword">
+            <label>当前密码<input v-model="passwordForm.current_password" type="password" autocomplete="current-password" required /></label>
+            <label>新密码<input v-model="passwordForm.new_password" type="password" autocomplete="new-password" minlength="12" required /></label>
+            <label>确认新密码<input v-model="passwordForm.confirm_password" type="password" autocomplete="new-password" minlength="12" required /></label>
+            <div class="form-actions"><button class="primary-button" :disabled="busy" type="submit">{{ busy ? '处理中…' : '更改密码' }}</button></div>
+          </form>
+        </section>
         <nav class="admin-tabs" role="tablist" aria-label="管理分类">
           <button v-for="tab in tabs" :id="`tab-${tab.id}`" :key="tab.id" type="button" role="tab" class="admin-tab" :class="{ active: activeTab === tab.id }" :aria-selected="activeTab === tab.id" :aria-controls="`panel-${tab.id}`" :tabindex="activeTab === tab.id ? 0 : -1" @click="selectTab(tab.id)" @keydown.left.prevent="moveTab(-1)" @keydown.right.prevent="moveTab(1)">{{ tab.label }}</button>
         </nav>

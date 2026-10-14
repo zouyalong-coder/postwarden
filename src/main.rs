@@ -58,12 +58,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Administrator initialized");
         return Ok(());
     }
-    if args.len() != 1 {
-        return Err("usage: postwarden [setup <login-name> | init-admin <login-name>]".into());
+    let reset_requested = args.len() == 2 && args[1] == "--reset-admin-password";
+    if args.len() != 1 && !reset_requested {
+        return Err("usage: postwarden [--reset-admin-password | setup <login-name> | init-admin <login-name>]".into());
     }
 
     let crypto = crypto::Crypto::from_env()?;
     let database = database::Database::connect(&config).await?;
+    if reset_requested {
+        let password = setup_password()?;
+        auth::reset_admin_password(&database, &password).await?;
+        println!("Administrator password reset; all administrator sessions revoked");
+    }
     let plugins = plugin_runtime::PluginManager::new(database.clone(), crypto.clone()).await?;
     let state = http::AppState {
         database,
